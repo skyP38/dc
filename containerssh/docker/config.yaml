@@ -1,0 +1,19 @@
+# Пример правильной конфигурации
+log:
+  level: info
+
+auth:
+  url: "http://auth-server:8080/"
+  timeout: 30s
+
+backend: docker
+
+docker:
+  connection:
+    host: unix:///var/run/docker.sock
+  execution:
+    mode: session
+    container:
+      image: "containerssh/guest-image:latest"
+      network:
+        enabled: false
