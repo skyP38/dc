@@ -1,9 +1,17 @@
-# Пример правильной конфигурации
 log:
-  level: info
+  level: debug
+
+ssh:
+  listen: "0.0.0.0:2222"
+  hostkeys:
+    - /etc/containerssh/ssh_host_rsa_key
 
 auth:
-  url: "http://auth-server:8080/"
+  url: "http://auth:8080/auth"
+  timeout: 30s
+
+configserver:
+  url: "http://configserver:8080/config"
   timeout: 30s
 
 backend: docker
@@ -11,9 +19,12 @@ backend: docker
 docker:
   connection:
     host: unix:///var/run/docker.sock
+  
   execution:
     mode: session
+    
     container:
-      image: "containerssh/guest-image:latest"
+      image: "alpine:latest" 
+      workingDir: /root
       network:
         enabled: false

@@ -26,53 +26,40 @@ func configHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Возвращаем базовую конфигурацию
+	// Конфигурация для ContainerSSH
 	config := map[string]interface{}{
 		"docker": map[string]interface{}{
-			"host": "unix:///var/run/docker.sock",
+			"connection": map[string]interface{}{
+				"host": "unix:///var/run/docker.sock",
+			},
 			"execution": map[string]interface{}{
 				"mode": "session",
 				"container": map[string]interface{}{
-					"image": "alpine:latest",
+					"image":      "alpine:latest",
+					"workingDir": "/root",
+					"network": map[string]interface{}{
+						"enabled": false,
+					},
 				},
 			},
 		},
 	}
-	// config := map[string]interface{}{
-	// 	"docker": map[string]interface{}{
-	// 		"host": "unix:///var/run/docker.sock",
-	// 		"execution": map[string]interface{}{
-	// 			"mode": "session",
-	// 			"session": map[string]interface{}{
-	// 				"mode": "passive",
-	// 			},
-	// 			"container": map[string]interface{}{
-	// 				"image":      "alpine:latest",
-	// 				"workingDir": "/config",
-	// 				"disableAgent": false,
-	// 			},
-	// 		},
-	// 		"timeouts": map[string]interface{}{
-	// 			"container": map[string]interface{}{
-	// 				"start": "60s",
-	// 				"stop":  "60s",
-	// 			},
-	// 			"signal":   "30s",
-	// 			"upload":   "30s",
-	// 			"download": "30s",
-	// 		},
-	// 	},
-	// }
 
 	response := ConfigResponse{Config: config}
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(response)
 
-	log.Printf("Config request: user=%s", req.Username)
+	log.Printf("Config request: user=%s, image=guest-image", req.Username)
 }
 
 func main() {
 	http.HandleFunc("/config", configHandler)
+
+	// health check endpoint
+	http.HandleFunc("/health", func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		w.Write([]byte("OK"))
+	})
 
 	log.Println("Config server starting on :8080")
 	if err := http.ListenAndServe(":8080", nil); err != nil {

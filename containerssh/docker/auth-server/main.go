@@ -41,6 +41,12 @@ func authHandler(w http.ResponseWriter, r *http.Request) {
 func main() {
 	http.HandleFunc("/auth", authHandler)
 
+	// health check endpoint
+	http.HandleFunc("/health", func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		w.Write([]byte("OK"))
+	})
+
 	log.Println("Auth server starting on :8080")
 	if err := http.ListenAndServe(":8080", nil); err != nil {
 		log.Fatal(err)
