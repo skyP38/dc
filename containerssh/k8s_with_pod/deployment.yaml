@@ -2,11 +2,11 @@ apiVersion: apps/v1
 kind: Deployment
 metadata:
   name: containerssh
-  namespace: default
+  namespace: containerssh
   labels:
     app: containerssh
 spec:
-  replicas: 2
+  replicas: 1
   selector:
     matchLabels:
       app: containerssh
@@ -15,51 +15,35 @@ spec:
       labels:
         app: containerssh
     spec:
-      # Настройки безопасности для работы с Docker/Podman socket
-      securityContext:
-        runAsUser: 0
-        fsGroup: 0
+      serviceAccountName: default
       containers:
       - name: containerssh
         image: containerssh/containerssh:latest
+        imagePullPolicy: IfNotPresent
         ports:
         - containerPort: 2222
           name: ssh
-        # Монтирование Docker/Podman socket
         volumeMounts:
-        - name: docker-socket
-          mountPath: /var/run/docker.sock
         - name: config
-          mountPath: /etc/containerssh
-        - name: ssh-keys
-          mountPath: /etc/containerssh/ssh
+          mountPath: /etc/containerssh/config.yaml
+          subPath: config.yaml
+        - name: hostkeys
+          mountPath: /etc/containerssh/hostkeys
+          readOnly: true
         resources:
           requests:
-            memory: "256Mi"
-            cpu: "250m"
+            memory: "128Mi"
+            cpu: "100m"
           limits:
-            memory: "512Mi"
-            cpu: "500m"
-        # Проверки жизнеспособности
-        livenessProbe:
-          tcpSocket:
-            port: 2222
-          initialDelaySeconds: 30
-          periodSeconds: 10
-        readinessProbe:
-          tcpSocket:
-            port: 2222
-          initialDelaySeconds: 5
-          periodSeconds: 5
+            memory: "256Mi"
+            cpu: "200m"
+        securityContext:
+          runAsUser: 1000
+          runAsNonRoot: true
       volumes:
-      - name: docker-socket
-        hostPath:
-          path: /var/run/docker.sock
-          type: Socket
       - name: config
         configMap:
           name: containerssh-config
-      - name: ssh-keys
+      - name: hostkeys
         secret:
           secretName: containerssh-ssh-keys
-          defaultMode: 0600

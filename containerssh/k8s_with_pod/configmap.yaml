@@ -2,55 +2,50 @@ apiVersion: v1
 kind: ConfigMap
 metadata:
   name: containerssh-config
-  namespace: default
+  namespace: containerssh
 data:
-  config.yaml:
-    # Основная конфигурация ContainerSSH
+  config.yaml: |
     log:
       level: debug
       format: text
 
     ssh:
-      # Прослушивание на стандартном SSH порту
       listen: "0.0.0.0:2222"
-      # Путь к хостовым ключам (будем использовать отдельный Secret)
       hostkeys:
-        - /etc/containerssh/ssh_host_rsa_key
+        - /etc/containerssh/hostkeys/ssh_host_rsa_key
 
     auth:
-      # Используем статическую авторизацию для демонстрации
-      # В продакшене используйте OAuth2, LDAP и т.д.
       password:
-        enable: true
-        method: "password"
-        backend: "dummy"
+        method: webhook
+        webhook:
+          url: "http://127.0.0.1:8080"
 
-    backend: "docker"
-    docker:
-      # Настройки подключения к Docker/Podman socket
+    # configserver:
+    #   url: "http://127.0.0.1:8080/config"
+    # metrics:
+    #   enable: true
+    #   listen: 0.0.0.0:9100
+    #   path: /metrics
+    backend: "kubernetes"
+    
+    kubernetes:
+      # Конфигурация подключения к Kubernetes
       connection:
-        host: "unix:///var/run/docker.sock"
-        # Для Podman может потребоваться certPath и tlsVerify
-      execution:
-        mode: "session"
-        # Базовый образ для контейнеров
-        image: "alpine:latest"
-        # Политика удаления контейнеров
-        container:
-          create:
-            disableAutoCreate: false
-          remove: true
-          stop:
-            timeout: 10s
-        # Настройки сессии
-        session:
-          # Команда по умолчанию
-          command: ["/bin/sh"]
-          # Переменные окружения
-          env: {}
-          # Рабочий каталог
-          workingDir: "/"
-          # Настройки терминала
-          terminal:
-            rows: 80
-            columns: 24
+        host: "https://kubernetes.default.svc"
+        cacert: /var/run/secrets/kubernetes.io/serviceaccount/ca.crt
+        bearerToken: /var/run/secrets/kubernetes.io/serviceaccount/token
+      
+      pod:
+        # Конфигурация запускаемого Pod
+        metadata:
+          namespace: default
+        spec:
+          containers:
+            - name: shell
+              image: "alpine:latest"
+              command: ["/bin/sh"]
+              stdin: true
+              tty: true
+              securityContext:
+                runAsUser: 1000
+          restartPolicy: Never
