@@ -6,12 +6,18 @@ class VerticalToolbar extends StatelessWidget {
   final GostNodeData? selectedPrototype;
   final ValueChanged<GostNodeData?> onSelectPrototype;
   final ValueChanged<Size> onSetNodeSize;
+  final bool isGridVisible;
+  final ValueChanged<bool> onGridToggle;
+  final VoidCallback onExport;
 
   const VerticalToolbar({
     super.key,
     required this.selectedPrototype,
     required this.onSelectPrototype,
     required this.onSetNodeSize,
+    required this.isGridVisible,
+    required this.onGridToggle,
+    required this.onExport,
   });
 
   @override
@@ -48,6 +54,17 @@ class VerticalToolbar extends StatelessWidget {
             shape: (size) => CustomPaint(size: size, painter: _SubroutineIconPainter()),
           ),
           const Divider(),
+          CheckboxListTile(
+            title: const Text('Показать сетку'),
+            value: isGridVisible,
+            onChanged: (value) => onGridToggle(value ?? false),
+            dense: true,
+          ),
+          ElevatedButton(
+            onPressed: onExport,
+            child: const Text('Экспорт в SVG'),
+          ),
+          const SizedBox(height: 8),
           ElevatedButton(
             onPressed: () => _showSetSizeDialog(context),
             child: const Text('Размер блоков'),
