@@ -14,7 +14,6 @@ import 'package:path_provider/path_provider.dart';
 import 'dart:io';
 
 String numberToLetter(int n) {
-  // n -= 1;
   const alphabet = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ';
   String result = '';
   while (n >= 0) {
@@ -38,7 +37,7 @@ class _EditorScreenState extends State<EditorScreen> {
   String? _selectedNodeName;
   GostNodeData? _selectedPrototype;
   bool _isApplyingLayout = false;
-  String? _selectedConnectionId; // for visual feedback (optional)
+  String? _selectedConnectionId;
   bool _isResizing = false;
   final FocusNode _focusNode = FocusNode();
   bool _showGrid = true;
@@ -117,14 +116,14 @@ class _EditorScreenState extends State<EditorScreen> {
     final bool isLogic = removedNode.data is LogicBlock;
 
     if (isLogic) {
-      // Собираем узлы на ветке "Нет", исключая End
+      // Сбор узлов на ветке "Нет", исключая End
       final Set<String> nodesToRemove = {nodeName};
       final noOutgoing = outgoing.where((c) => c.sourcePort == 'no').toList();
       for (final conn in noOutgoing) {
         _collectSubtreeExcludingEnd(conn.targetNodeName, nodesToRemove);
       }
 
-      // Удаляем собранные узлы (кроме самого логического и End)
+      // Удаление собранных узлов (кроме самого логического и End)
       for (final n in nodesToRemove) {
         if (n == nodeName) continue;
         final node = _nodes[n]?.node;
@@ -132,19 +131,19 @@ class _EditorScreenState extends State<EditorScreen> {
         _nodes.remove(n);
       }
 
-      // Формируем финальное множество для удаления связей (исключая End)
+      // Формирование финального множества для удаления связей (исключая End)
       final nodesToRemoveFinal = nodesToRemove.where((n) {
         final nd = _nodes[n]?.node;
         return !(nd != null && nd.data is TerminalBlock && nd.data.text == 'End');
       }).toSet();
       nodesToRemoveFinal.add(nodeName); // сам логический блок
 
-      // Удаляем связи, где источник или цель входит в nodesToRemoveFinal
+      // Удаление связей, где источник или цель входит в nodesToRemoveFinal
       _connections.removeWhere((c) =>
       nodesToRemoveFinal.contains(c.sourceNodeName) ||
       nodesToRemoveFinal.contains(c.targetNodeName));
 
-      // Переподключаем вход к выходу 'yes'
+      // Переподключение входа к выходу 'yes'
       final incomingConn = incoming.isNotEmpty ? incoming.first : null;
       final outgoingYes = outgoing.firstWhereOrNull((c) => c.sourcePort == 'yes');
       if (incomingConn != null && outgoingYes != null && _nodes.containsKey(outgoingYes.targetNodeName)) {
@@ -157,7 +156,7 @@ class _EditorScreenState extends State<EditorScreen> {
         ));
       }
 
-      // Удаляем сам логический блок
+      // Удаление логического блока
       _nodes.remove(nodeName);
     } else {
       // Обычный блок – без изменений
@@ -199,7 +198,7 @@ class _EditorScreenState extends State<EditorScreen> {
 
   @override
   Widget build(BuildContext context) {
-    // Создаём контроллер для вертикальной прокрутки
+    // Создание контроллера для вертикальной прокрутки
     final verticalScrollController = ScrollController();
     // Для горизонтальной прокрутки
     final horizontalScrollController = ScrollController();
@@ -305,7 +304,7 @@ class _EditorScreenState extends State<EditorScreen> {
     );
   }
 
-  // --- Обработка удаления блока ---
+  // Обработка удаления блока
   void _handleKeyEvent(RawKeyEvent event) {
     if (event is RawKeyDownEvent) {
       if (event.logicalKey == LogicalKeyboardKey.delete ||
@@ -340,7 +339,7 @@ class _EditorScreenState extends State<EditorScreen> {
             _selectedNodeName = nodeName;
             _selectedConnectionId = null;
           });
-          _focusNode.requestFocus(); // запрашиваем фокус
+          _focusNode.requestFocus();
         },
         onDoubleTap: () => _editNodeText(nodeName),
         onSecondaryTapDown: (details) => _showNodeContextMenu(details, nodeName),
@@ -398,9 +397,8 @@ class _EditorScreenState extends State<EditorScreen> {
   void _handleCanvasTapDown(TapDownDetails details) {
     final localPos = details.localPosition;
 
-    // Find connection that was tapped
     _ConnectionData? tappedConnection;
-    double minDistance = 15.0; // threshold in pixels
+    double minDistance = 15.0;
 
     for (final conn in _connections) {
       final sourceNode = _nodes[conn.sourceNodeName];
@@ -409,12 +407,11 @@ class _EditorScreenState extends State<EditorScreen> {
 
       final path = _getConnectionPath(conn);
 
-      // Разбиваем путь на сегменты и ищем минимальное расстояние
+      // Разбиение пути на сегменты и поиск минимальное расстояние
       double minDistForConn = double.infinity;
       final metrics = path.computeMetrics();
       for (final metric in metrics) {
-        // Длина пути – не нужна, проходим сегменты
-        const double step = 2.0; // шаг для дискретизации (можно меньше)
+        const double step = 2.0; // шаг для дискретизации
         for (double dist = 0; dist <= metric.length; dist += step) {
           final tangent = metric.getTangentForOffset(dist);
           if (tangent != null) {
@@ -425,7 +422,7 @@ class _EditorScreenState extends State<EditorScreen> {
             }
           }
         }
-        // Также проверим конечную точку
+        // Проверка конечной точки
         final endPoint = metric.getTangentForOffset(metric.length)?.position;
         if (endPoint != null) {
           final distance = (localPos - endPoint).distance;
@@ -444,11 +441,9 @@ class _EditorScreenState extends State<EditorScreen> {
         _selectedNodeName = null;
       });
 
-      // If a prototype is selected, insert the node
       if (_selectedPrototype != null) {
         _insertNodeOnConnection(tappedConnection);
       } else {
-        // Optional: show a message that no prototype is selected
         ScaffoldMessenger.of(context).showSnackBar(
           const SnackBar(content: Text('Выберите тип блока на панели слева')),
         );
@@ -473,7 +468,7 @@ class _EditorScreenState extends State<EditorScreen> {
     final target = _nodes[conn.targetNodeName];
     if (source == null || target == null) return Path();
 
-    // Вычисляем самую нижнюю границу
+    // Вычисление нижней границы
     double maxBottomY = 0;
     for (final entry in _nodes.entries) {
       final bottom = entry.value.position.dy + _nodeSize.height;
@@ -611,14 +606,12 @@ class _EditorScreenState extends State<EditorScreen> {
 
     final prototype = _selectedPrototype!;
 
-    // Calculate position for the new node: midpoint between source and target
     final sourcePos = _nodes[connection.sourceNodeName]!.position;
     final targetPos = _nodes[connection.targetNodeName]!.position;
     final midpoint = Offset(
       (sourcePos.dx + targetPos.dx) / 2,
       (sourcePos.dy + targetPos.dy) / 2,
     );
-    // Snap to grid or fine-tune
     final newPos = Offset(midpoint.dx, midpoint.dy);
 
     final newNode = NodeFactory.createNode(
@@ -628,12 +621,10 @@ class _EditorScreenState extends State<EditorScreen> {
     );
     _addNode(newNode);
 
-    // Determine output port name
     final newSourcePortName = (prototype is LogicBlock) ? 'yes' : 'out';
-    // Remove old connection
     _connections.removeWhere((c) => c.id == connection.id);
 
-    // Add two new connections: source -> newNode, newNode -> target
+    // Add connections: source -> newNode, newNode -> target
     _connections.add(_ConnectionData(
       id: _uuid.v4(),
       sourceNodeName: connection.sourceNodeName,
@@ -656,7 +647,6 @@ class _EditorScreenState extends State<EditorScreen> {
       .map((d) => d.node)
       .firstWhereOrNull((n) => n.data is TerminalBlock && n.data.text == 'End');
       if (endNode == null) {
-        // Создаём новый End справа от нового блока
         final endPos = Offset(newPos.dx + _nodeSize.width + 80, newPos.dy + _nodeSize.height + 30);
         endNode = NodeFactory.createNode(
           id: _uuid.v4(),
@@ -688,14 +678,6 @@ class _EditorScreenState extends State<EditorScreen> {
     _selectedPrototype = null;
     _selectedConnectionId = null;
     _applyAutoLayout();
-
-
-    // setState(() {
-    //   _selectedPrototype = null;
-    //   _selectedConnectionId = null;
-    // });
-    //
-    // _applyAutoLayout();
   }
 
   Widget _buildNodeShape(NodeModel node, bool isSelected) {
@@ -772,7 +754,7 @@ class _EditorScreenState extends State<EditorScreen> {
     if (_isApplyingLayout || _isResizing) return;
     _isApplyingLayout = true;
 
-    // 1. Найти стартовый узел
+    // Поиск стартового узла
     final startNodeEntry = _nodes.entries.firstWhereOrNull(
       (e) => e.value.node.data is TerminalBlock && e.value.node.data.text == 'Start',
     );
@@ -782,15 +764,15 @@ class _EditorScreenState extends State<EditorScreen> {
     }
     final startName = startNodeEntry.key;
     final startPos = startNodeEntry.value.position;
-    const double xOffsetStart = 0; // Старт не сдвигаем
+    const double xOffsetStart = 0;
 
-    // 2. Построить исходящие связи для каждого узла
+    // Построение исходящих связей для каждого узла
     final Map<String, List<_ConnectionData>> outgoing = {};
     for (final conn in _connections) {
       outgoing.putIfAbsent(conn.sourceNodeName, () => []).add(conn);
     }
 
-    // 3. Вычисление рангов (BFS с накоплением максимальной глубины)
+    // Вычисление рангов (BFS с накоплением максимальной глубины)
     final Map<String, int> ranks = {};
     final queue = <String>[];
     ranks[startName] = 0;
@@ -808,16 +790,14 @@ class _EditorScreenState extends State<EditorScreen> {
       }
     }
 
-    // 4. Рекурсивное определение X-координат (с учётом ветвления "Нет")
+    // Рекурсивное определение X-координат
     final Map<String, double> xPositions = {};
     double _layoutX(String nodeName, double currentX, Set<String> visited) {
       if (visited.contains(nodeName)) return currentX;
       visited.add(nodeName);
-      // Если узел уже имеет позицию, не перезаписываем (берём первую)
       if (!xPositions.containsKey(nodeName)) {
         xPositions[nodeName] = currentX;
       } else {
-        // Если уже есть, используем существующую (для избежания конфликтов)
         currentX = xPositions[nodeName]!;
       }
 
@@ -828,7 +808,6 @@ class _EditorScreenState extends State<EditorScreen> {
       final isLogic = node?.data is LogicBlock;
 
       if (isLogic && children.length >= 2) {
-        // Для логического блока обрабатываем "yes" и "no" отдельно
         _ConnectionData? yesConn, noConn;
         for (final c in children) {
           if (c.sourcePort == 'yes') yesConn = c;
@@ -841,7 +820,7 @@ class _EditorScreenState extends State<EditorScreen> {
           // Сдвиг для ветки "Нет"
           final targetNode = _nodes[noConn.targetNodeName]?.node;
           final isEnd = targetNode != null && targetNode.data is TerminalBlock && targetNode.data.text == 'End';
-          const double noOffset = 300; // можно настроить под свои нужды
+          const double noOffset = 300;
           final offset = isEnd ? 0 : noOffset;
           _layoutX(noConn.targetNodeName, currentX + offset, visited);
         }
@@ -857,7 +836,7 @@ class _EditorScreenState extends State<EditorScreen> {
     final visited = <String>{};
     _layoutX(startName, startPos.dx + xOffsetStart, visited);
 
-    // 5. Коррекция перекрытий на каждом уровне (ранге)
+    // Коррекция перекрытий на каждом уровне
     final Map<int, List<String>> nodesByRank = {};
     for (final entry in ranks.entries) {
       nodesByRank.putIfAbsent(entry.value, () => []).add(entry.key);
@@ -866,7 +845,7 @@ class _EditorScreenState extends State<EditorScreen> {
     for (final rank in nodesByRank.keys) {
       final nodeNames = nodesByRank[rank]!;
       nodeNames.sort((a, b) => xPositions[a]!.compareTo(xPositions[b]!));
-      double nextMinX = startPos.dx; // начинаем с X стартового блока
+      double nextMinX = startPos.dx;
       for (final name in nodeNames) {
         double currentX = xPositions[name]!;
         if (currentX < nextMinX) {
@@ -877,7 +856,7 @@ class _EditorScreenState extends State<EditorScreen> {
       }
     }
 
-    // 6. Вычисление Y-координат
+    // Вычисление Y-координат
     final stepY = _nodeSize.height + 40.0;
     final double startY = startPos.dy;
     // final stepY = _nodeSize.height + 30.0;
@@ -891,7 +870,7 @@ class _EditorScreenState extends State<EditorScreen> {
       newPositions[name] = Offset(x, y);
     }
 
-    // 7. Обработка конечного блока End
+    // Обработка конечного блока End
     final endNodeEntry = _nodes.entries.firstWhereOrNull(
       (e) => e.value.node.data is TerminalBlock && e.value.node.data.text == 'End',
     );
@@ -1125,8 +1104,6 @@ class _EditorScreenState extends State<EditorScreen> {
 
 }
 
-// --- Data classes ---
-
 class _NodeWidgetData {
   NodeModel node;
   Offset position;
@@ -1169,7 +1146,7 @@ class _ConnectionPainter extends CustomPainter {
 
   @override
   void paint(Canvas canvas, Size size) {
-    // Находим самую нижнюю границу всех блоков
+    // Поиск нижней границы всех блоков
     double maxBottomY = 0;
     for (final entry in nodes.entries) {
       final bottom = entry.value.position.dy + nodeSize.height;
@@ -1246,7 +1223,7 @@ class _ConnectionPainter extends CustomPainter {
         } else if (isEnd) {
           canvas.drawLine(start, end, paint);
         } else {
-          // вправо → вниз → влево
+          // вправо -> вниз -> влево
           final sourcePos = source.position + Offset(nodeSize.width / 2, nodeSize.height);
           final targetPos = target.position + Offset(nodeSize.width / 2, 0);
           canvas.drawLine(sourcePos, targetPos, paint);
@@ -1258,7 +1235,7 @@ class _ConnectionPainter extends CustomPainter {
         final isEnd = targetNode != null && targetNode.data is TerminalBlock && targetNode.data.text == 'End';
 
         if (isEnd && end.dx != start.dx) {
-          // Путь для End: вниз → влево → вниз
+          // Путь для End: вниз -> влево -> вниз
           final mid1 = Offset(start.dx, start.dy + 20);
           final mid2 = Offset(mid1.dx, endLineY);
           final mid3 = Offset(end.dx, mid2.dy);
