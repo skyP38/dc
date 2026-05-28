@@ -6,6 +6,7 @@ pkgs.mkShell {
     cmake
     ninja
     gtk3
+    pcre2
     pkg-config
     glib
     libsysprof-capture
