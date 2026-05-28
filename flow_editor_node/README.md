@@ -25,7 +25,7 @@ flutter pub get
 
 Под Linux:
 ```bash
-flutter runn -d linux
+flutter run -d linux
 ```
 
 Web-версия:
