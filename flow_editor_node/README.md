@@ -14,3 +14,26 @@ A few resources to get you started if this is your first Flutter project:
 For help getting started with Flutter development, view the
 [online documentation](https://docs.flutter.dev/), which offers tutorials,
 samples, guidance on mobile development, and a full API reference.
+
+
+`shell.nix` - необходимые пакеты для NixOs (`nix-shell`)
+
+Перед сборкой рекоммендуется:
+```bash
+flutter pub get
+```
+
+Под Linux:
+```bash
+flutter run -d linux
+```
+
+Web-версия:
+```bash
+flutter run -d web-server --web-hostname localhost --web-port 8080
+```
+
+Если что-то перестало работать или нужно пересобрать под новую платформу:
+```bash
+flutter doctor
+```
