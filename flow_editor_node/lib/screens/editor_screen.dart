@@ -12,17 +12,21 @@ import 'dart:typed_data';
 import 'package:share_plus/share_plus.dart';
 import 'package:path_provider/path_provider.dart';
 import 'dart:io';
+import 'dart:math' as math;
 
-String numberToLetter(int n) {
-  const alphabet = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ';
-  String result = '';
-  while (n >= 0) {
-    result = alphabet[n % 26] + result;
-    n = (n / 26).floor() - 1;
-    if (n < 0) break;
-  }
-  return result;
-}
+
+import '../models/editor_models.dart';
+import '../painters/connection_painter.dart';
+import '../painters/selection_painter.dart';
+import '../painters/grid_labels_painter.dart';
+
+
+import 'dart:convert';
+import 'package:path_provider/path_provider.dart';
+import 'dart:io';
+
+import '../models/editor_state.dart';
+
 
 class EditorScreen extends StatefulWidget {
   @override
@@ -32,9 +36,18 @@ class EditorScreen extends StatefulWidget {
 class _EditorScreenState extends State<EditorScreen> {
   static const Size _defaultNodeSize = Size(160, 80);
   late Size _nodeSize;
-  final Map<String, _NodeWidgetData> _nodes = {};
-  final List<_ConnectionData> _connections = [];
-  String? _selectedNodeName;
+
+
+  final Map<String, NodeWidgetData> _nodes = {};
+  final List<ConnectionData> _connections = [];
+
+  Set<String> _selectedNodeNames = {};
+  Offset? _selectionStart;
+  Offset? _selectionEnd;
+  bool _isSelecting = false;
+  bool _isSelectingFromEmpty = false;
+  List<InsertionPoint> _insertionPoints = [];
+
   GostNodeData? _selectedPrototype;
   bool _isApplyingLayout = false;
   String? _selectedConnectionId;
@@ -42,7 +55,20 @@ class _EditorScreenState extends State<EditorScreen> {
   final FocusNode _focusNode = FocusNode();
   bool _showGrid = true;
 
+  double _scale = 1.0;
+  static const double _minScale = 0.5;
+  static const double _maxScale = 3.0;
+
+  bool _isToolbarVisible = true;
+
   final Uuid _uuid = const Uuid();
+
+
+  static const int _maxHistorySize = 50;
+  final List<EditorSnapshot> _undoStack = [];
+  final List<EditorSnapshot> _redoStack = [];
+  int _currentSnapshotIndex = -1; // -1 значит не синхронизировано с текущим состоянием
+  bool _isUndoRedoOperation = false;
 
   @override
   void initState() {
@@ -80,7 +106,7 @@ class _EditorScreenState extends State<EditorScreen> {
     );
     _addNode(endNode);
 
-    _connections.add(_ConnectionData(
+    _connections.add(ConnectionData(
       id: _uuid.v4(),
       sourceNodeName: startNode.name,
       sourcePort: 'out',
@@ -88,16 +114,26 @@ class _EditorScreenState extends State<EditorScreen> {
       targetPort: 'in',
     ));
     setState(() {});
+
+
+    _updateInsertionPoints();
   }
 
   void _addNode(NodeModel node) {
-    _nodes[node.name] = _NodeWidgetData(
+     // _pushState();
+
+    _nodes[node.name] = NodeWidgetData(
       node: node,
       position: node.position,
     );
+
+    _updateInsertionPoints();
   }
 
   void _removeNode(String nodeName) {
+    _pushState();
+
+
     final removedNode = _nodes[nodeName]?.node;
     if (removedNode == null) return;
 
@@ -114,13 +150,20 @@ class _EditorScreenState extends State<EditorScreen> {
     final incoming = _connections.where((c) => c.targetNodeName == nodeName).toList();
     final outgoing = _connections.where((c) => c.sourceNodeName == nodeName).toList();
     final bool isLogic = removedNode.data is LogicBlock;
+    final bool isFor = removedNode.data is ForBlock;
 
     if (isLogic) {
+      // Найти входную связь
+      final incomingConn = incoming.isNotEmpty ? incoming.first : null;
+      // Найти выходную связь 'yes'
+      final outgoingYes = outgoing.firstWhereOrNull((c) => c.sourcePort == 'yes');
+      // Найти выходную связь 'no'
+      final outgoingNo = outgoing.firstWhereOrNull((c) => c.sourcePort == 'no');
+
       // Сбор узлов на ветке "Нет", исключая End
-      final Set<String> nodesToRemove = {nodeName};
-      final noOutgoing = outgoing.where((c) => c.sourcePort == 'no').toList();
-      for (final conn in noOutgoing) {
-        _collectSubtreeExcludingEnd(conn.targetNodeName, nodesToRemove);
+      final Set<String> nodesToRemove = {};
+      if (outgoingNo != null) {
+        _collectSubtreeExcludingEnd(outgoingNo.targetNodeName, nodesToRemove);
       }
 
       // Удаление собранных узлов (кроме самого логического и End)
@@ -131,23 +174,17 @@ class _EditorScreenState extends State<EditorScreen> {
         _nodes.remove(n);
       }
 
-      // Формирование финального множества для удаления связей (исключая End)
-      final nodesToRemoveFinal = nodesToRemove.where((n) {
-        final nd = _nodes[n]?.node;
-        return !(nd != null && nd.data is TerminalBlock && nd.data.text == 'End');
-      }).toSet();
-      nodesToRemoveFinal.add(nodeName); // сам логический блок
-
-      // Удаление связей, где источник или цель входит в nodesToRemoveFinal
+      // Удалить все связи, где источник или цель входит в удаляемое поддерево
       _connections.removeWhere((c) =>
-      nodesToRemoveFinal.contains(c.sourceNodeName) ||
-      nodesToRemoveFinal.contains(c.targetNodeName));
+      nodesToRemove.contains(c.sourceNodeName) ||
+      nodesToRemove.contains(c.targetNodeName));
 
-      // Переподключение входа к выходу 'yes'
-      final incomingConn = incoming.isNotEmpty ? incoming.first : null;
-      final outgoingYes = outgoing.firstWhereOrNull((c) => c.sourcePort == 'yes');
+      // Удалить связи, связанные с текущим логическим блоком
+      _connections.removeWhere((c) =>
+      c.sourceNodeName == nodeName || c.targetNodeName == nodeName);
+
       if (incomingConn != null && outgoingYes != null && _nodes.containsKey(outgoingYes.targetNodeName)) {
-        _connections.add(_ConnectionData(
+        _connections.add(ConnectionData(
           id: _uuid.v4(),
           sourceNodeName: incomingConn.sourceNodeName,
           sourcePort: incomingConn.sourcePort,
@@ -158,12 +195,51 @@ class _EditorScreenState extends State<EditorScreen> {
 
       // Удаление логического блока
       _nodes.remove(nodeName);
+    } else if (isFor) {
+      final incomingConn = incoming.isNotEmpty ? incoming.first : null;
+      final outgoingExit = outgoing.firstWhereOrNull((c) => c.sourcePort == 'exit');
+      final outgoingBody = outgoing.firstWhereOrNull((c) => c.sourcePort == 'body');
+
+      final Set<String> nodesToRemove = {};
+      if (outgoingBody != null) {
+        _collectSubtreeExcludingEnd(outgoingBody.targetNodeName, nodesToRemove);
+      }
+
+      // Удаляем узлы поддерева body (кроме End)
+      for (final n in nodesToRemove) {
+        if (n == nodeName) continue;
+        final node = _nodes[n]?.node;
+        if (node != null && node.data is TerminalBlock && node.data.text == 'End') continue;
+        _nodes.remove(n);
+      }
+
+      // Удаляем все связи, где источник или цель входят в nodesToRemove
+      _connections.removeWhere((c) =>
+      nodesToRemove.contains(c.sourceNodeName) ||
+      nodesToRemove.contains(c.targetNodeName));
+
+      // Удаляем связи, связанные с текущим блоком For
+      _connections.removeWhere((c) =>
+      c.sourceNodeName == nodeName || c.targetNodeName == nodeName);
+
+      // Переподключаем вход к выходу exit
+      if (incomingConn != null && outgoingExit != null && _nodes.containsKey(outgoingExit.targetNodeName)) {
+        _connections.add(ConnectionData(
+          id: _uuid.v4(),
+          sourceNodeName: incomingConn.sourceNodeName,
+          sourcePort: incomingConn.sourcePort,
+          targetNodeName: outgoingExit.targetNodeName,
+          targetPort: outgoingExit.targetPort,
+        ));
+      }
+
+      _nodes.remove(nodeName);
     } else {
       // Обычный блок – без изменений
       if (incoming.length == 1 && outgoing.length == 1) {
         final inConn = incoming.first;
         final outConn = outgoing.first;
-        _connections.add(_ConnectionData(
+        _connections.add(ConnectionData(
           id: _uuid.v4(),
           sourceNodeName: inConn.sourceNodeName,
           sourcePort: inConn.sourcePort,
@@ -175,16 +251,151 @@ class _EditorScreenState extends State<EditorScreen> {
       _nodes.remove(nodeName);
     }
 
-    if (_selectedNodeName == nodeName) _selectedNodeName = null;
+    // if (_selectedNodeName == nodeName) _selectedNodeName = null;
+    if (_selectedNodeNames.contains(nodeName)) _selectedNodeNames.remove(nodeName);
     if (_selectedConnectionId != null) _selectedConnectionId = null;
 
     setState(() {});
     _applyAutoLayout();
+
+    _updateInsertionPoints();
+  }
+
+  EditorSnapshot _captureSnapshot() {
+    final nodesList = _nodes.entries.map((e) => SerializableNode.fromNode(e.value.node)).toList();
+    final connectionsList = _connections.map((c) => SerializableConnection.fromConnection(c)).toList();
+    return EditorSnapshot(
+      nodes: nodesList,
+      connections: connectionsList,
+      nodeWidth: _nodeSize.width,
+      nodeHeight: _nodeSize.height,
+      showGrid: _showGrid,
+      scale: _scale,
+      isToolbarVisible: _isToolbarVisible,
+    );
+  }
+
+  void _restoreSnapshot(EditorSnapshot snapshot) {
+    _isUndoRedoOperation = true;
+
+    // Восстановление узлов
+    final newNodes = <String, NodeWidgetData>{};
+    for (final sn in snapshot.nodes) {
+      final node = sn.toNode();
+      newNodes[node.name] = NodeWidgetData(node: node, position: node.position);
+    }
+    _nodes.clear();
+    _nodes.addAll(newNodes);
+
+    // Восстановление связей
+    _connections.clear();
+    _connections.addAll(snapshot.connections.map((c) => c.toConnection()));
+
+    // Восстановление настроек
+    _nodeSize = Size(snapshot.nodeWidth, snapshot.nodeHeight);
+    _showGrid = snapshot.showGrid;
+    _scale = snapshot.scale;
+    _isToolbarVisible = snapshot.isToolbarVisible;
+
+    // Сброс выделений
+    _selectedNodeNames.clear();
+    _selectedConnectionId = null;
+    _selectionStart = null;
+    _selectionEnd = null;
+    _isSelecting = false;
+
+    setState(() {
+      // принудительная перерисовка
+    });
+
+    _applyAutoLayout();
+    _updateInsertionPoints();
+    _isUndoRedoOperation = false;
+  }
+
+  void _pushState() {
+    if (_isUndoRedoOperation) return;
+    final snapshot = _captureSnapshot();
+    _undoStack.add(snapshot);
+    if (_undoStack.length > _maxHistorySize) _undoStack.removeAt(0);
+    _redoStack.clear();
+  }
+
+  void _undo() {
+    if (_undoStack.isEmpty) return;
+    final previous = _undoStack.removeLast();
+    // сохранить текущее состояние в redo
+    _redoStack.add(_captureSnapshot());
+    if (_redoStack.length > _maxHistorySize) _redoStack.removeAt(0);
+    _restoreSnapshot(previous);
+  }
+
+  void _redo() {
+    if (_redoStack.isEmpty) return;
+    final next = _redoStack.removeLast();
+    _undoStack.add(_captureSnapshot());
+    if (_undoStack.length > _maxHistorySize) _undoStack.removeAt(0);
+    _restoreSnapshot(next);
+  }
+
+
+  double _getMaxBottomOfBodySubtree(String forNodeName) {
+    // Найти корень тела (узел, подключённый к порту 'body')
+    String? bodyRoot;
+    for (final conn in _connections) {
+      if (conn.sourceNodeName == forNodeName && conn.sourcePort == 'body') {
+        bodyRoot = conn.targetNodeName;
+        break;
+      }
+    }
+    if (bodyRoot == null) return double.negativeInfinity;
+
+    final Set<String> subtree = {};
+    _collectSubtreeExcludingEnd(bodyRoot, subtree);
+    double maxBottom = 0;
+    for (final nodeName in subtree) {
+      final nodeData = _nodes[nodeName];
+      if (nodeData != null) {
+        final bottom = nodeData.position.dy + _nodeSize.height;
+        if (bottom > maxBottom) maxBottom = bottom;
+      }
+    }
+    return maxBottom;
+  }
+
+  Future<void> _saveToJson() async {
+    final snapshot = _captureSnapshot();
+    final json = jsonEncode(snapshot.toJson());
+    final directory = await getApplicationDocumentsDirectory();
+    final file = File('${directory.path}/diagram.json');
+    await file.writeAsString(json);
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(content: Text('Схема сохранена: ${file.path}')),
+    );
+  }
+
+  Future<void> _loadFromJson() async {
+    try {
+      final directory = await getApplicationDocumentsDirectory();
+      final file = File('${directory.path}/diagram.json');
+      if (!await file.exists()) throw Exception('Файл не найден');
+      final jsonString = await file.readAsString();
+      final Map<String, dynamic> jsonMap = jsonDecode(jsonString);
+      final snapshot = EditorSnapshot.fromJson(jsonMap);
+      _restoreSnapshot(snapshot);
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Схема загружена')),
+      );
+    } catch (e) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Ошибка загрузки: $e')),
+      );
+    }
   }
 
 
 
-  /// Рекурсивно собирает узлы, достижимые из startNode, но не включает блок End
+  // Рекурсивно собирает узлы, достижимые из startNode, но не включает блок End
   void _collectSubtreeExcludingEnd(String startNode, Set<String> collected) {
     if (collected.contains(startNode)) return;
     final node = _nodes[startNode]?.node;
@@ -204,131 +415,284 @@ class _EditorScreenState extends State<EditorScreen> {
     final horizontalScrollController = ScrollController();
 
     return Scaffold(
-      body: Row(
+      body: Stack(
         children: [
-          VerticalToolbar(
-            selectedPrototype: _selectedPrototype,
-            onSelectPrototype: (p) => setState(() => _selectedPrototype = p),
-            onSetNodeSize: _setNodeSize,
-            isGridVisible: _showGrid,
-            onGridToggle: (value) => setState(() => _showGrid = value),
-            onExport: _exportToSvg,
-          ),
-          Expanded(
-            child: LayoutBuilder(
-              builder: (context, constraints) {
-                final contentSize = _getContentSize();
-                Widget gridWidget = const SizedBox.shrink();
-                if (_showGrid) {
-                  final startNodeEntry = _nodes.entries.firstWhereOrNull(
-                    (e) => e.value.node.data is TerminalBlock && e.value.node.data.text == 'Start',
-                  );
-                  if (startNodeEntry != null) {
-                    gridWidget = GridWithLabels(
-                      canvasSize: contentSize,
-                      stepX: _nodeSize.width,
-                      stepY: _nodeSize.height,
-                      startPosition: startNodeEntry.value.position,
-                    );
-                  }
-                }
-                return Scrollbar(
-                  thumbVisibility: true,
-                  trackVisibility: true,   // всегда показывать дорожку полосы
-                  controller: verticalScrollController,
-                  child: SingleChildScrollView(
-                    controller: verticalScrollController,
-                    scrollDirection: Axis.vertical,
-                    child: Scrollbar(
-                      thumbVisibility: true,
-                      trackVisibility: true,   // дорожка для горизонтальной полосы
-                      controller: horizontalScrollController,
-                      child: SingleChildScrollView(
-                        controller: horizontalScrollController,
-                        scrollDirection: Axis.horizontal,
-                        child: Container(
-                          width: contentSize.width,
-                          height: contentSize.height,
-                          child: GestureDetector(
-                            onTapDown: _handleCanvasTapDown,
-                            onTap: () {
-                              setState(() {
-                                _selectedNodeName = null;
-                                _selectedConnectionId = null;
-                              });
-                              _focusNode.requestFocus();
-                            },
-                            child: RawKeyboardListener(
-                                focusNode: _focusNode,
-                                autofocus: true,
-                                onKey: _handleKeyEvent,
-                                child: CustomPaint(
-                                  painter: _ConnectionPainter(
-                                    connections: _connections,
-                                    nodes: _nodes,
-                                    nodeSize: _nodeSize,
-                                    selectedConnectionId: _selectedConnectionId,
-                                  ),
-                                  child: Stack(
-                                    children: [
-                                        if (_showGrid) gridWidget,
-                                        // Линии соединений
-                                        CustomPaint(
-                                          painter: _ConnectionPainter(
-                                            connections: _connections,
-                                            nodes: _nodes,
-                                            nodeSize: _nodeSize,
-                                            selectedConnectionId: _selectedConnectionId,
-                                          ),
-                                          child: Stack(
-                                            children: _nodes.entries
-                                            .map((entry) => _buildNodeWidget(entry.key, entry.value))
-                                            .toList(),
+          if (_isToolbarVisible)
+            Positioned(
+              left: 0,
+              top: 0,
+              bottom: 0,
+              child: RepaintBoundary(
+                child: SizedBox(
+                  width: 200,
+                  child: VerticalToolbar(
+                    selectedPrototype: _selectedPrototype,
+                    onSelectPrototype: (p) => setState(() => _selectedPrototype = p),
+                    onSetNodeSize: _setNodeSize,
+                    isGridVisible: _showGrid,
+                    onGridToggle: (value) => setState(() => _showGrid = value),
+                    onExport: _exportToSvg,
+                    onUndo: _undo,
+                    onRedo: _redo,
+                    onSave: _saveToJson,
+                    onLoad: _loadFromJson,
+                  ),
+                ),
+              ),
+            ),
+
+            Positioned(
+              top: 18,
+              left: _isToolbarVisible ? 200 - 40 : 8,
+              child: FloatingActionButton.small(
+                heroTag: null,
+                onPressed: () {
+                  setState(() {
+                    _isToolbarVisible = !_isToolbarVisible;
+                  });
+                },
+                child: Icon(_isToolbarVisible ? Icons.chevron_left : Icons.chevron_right),
+              ),
+            ),
+
+          Row(
+            children: [
+              SizedBox(width: _isToolbarVisible ? 200 : 40),
+              Expanded(
+                child: LayoutBuilder(
+                      builder: (context, constraints) {
+                        final contentSize = _getContentSize();
+                        Widget gridWidget = const SizedBox.shrink();
+                        if (_showGrid) {
+                          final startNodeEntry = _nodes.entries.firstWhereOrNull(
+                            (e) => e.value.node.data is TerminalBlock && e.value.node.data.text == 'Start',
+                          );
+                          if (startNodeEntry != null) {
+                            gridWidget = GridWithLabels(
+                              canvasSize: contentSize,
+                              stepX: _nodeSize.width,
+                              stepY: _nodeSize.height,
+                              startPosition: startNodeEntry.value.position,
+                            );
+                          }
+                        }
+                        return Scrollbar(
+                          thumbVisibility: true,
+                          trackVisibility: true,   // всегда показывать дорожку полосы
+                          controller: verticalScrollController,
+                          child: SingleChildScrollView(
+                            controller: verticalScrollController,
+                            scrollDirection: Axis.vertical,
+                            child: Scrollbar(
+                              thumbVisibility: true,
+                              trackVisibility: true,   // дорожка для горизонтальной полосы
+                              controller: horizontalScrollController,
+                              child: SingleChildScrollView(
+                                controller: horizontalScrollController,
+                                scrollDirection: Axis.horizontal,
+                                child: Container(
+                                  width: contentSize.width,
+                                  height: contentSize.height,
+                                  child: Listener(
+                                    onPointerSignal: (event) {
+                                      final isCtrl = RawKeyboard.instance.keysPressed.contains(LogicalKeyboardKey.controlLeft) ||
+                                        RawKeyboard.instance.keysPressed.contains(LogicalKeyboardKey.controlRight);
+                                      if (isCtrl) {
+                                        try {
+                                          final scrollDelta = (event as dynamic).scrollDelta.dy;
+                                          if (scrollDelta != null) {
+                                            setState(() {
+                                              _scale = (_scale + scrollDelta * -0.01).clamp(_minScale, _maxScale);
+                                            });
+                                          }
+                                        } catch (e) {
+                                          // Игноририрование событий, не являющихся прокруткой
+                                        }
+                                      }
+                                    },
+                                  // width: contentSize.width,
+                                  // height: contentSize.height,
+                                  child: Transform(
+                                    transform: Matrix4.diagonal3Values(_scale, _scale, 1.0),
+                                    child: GestureDetector(
+                                      onTapDown: _handleCanvasTapDown,
+                                      onTap: () {
+                                        setState(() {
+                                          // _selectedNodeName = null;
+                                          _selectedNodeNames.clear();
+                                          _selectedConnectionId = null;
+                                          _selectionStart = null;
+                                          _selectionEnd = null;
+                                          _isSelecting = false;
+                                        });
+                                        _focusNode.requestFocus();
+                                      },
+                                      onPanStart: (details) {
+                                        // Начинаем выделение, только если касание было по пустой области
+                                        if (!_isSelectingFromEmpty) return;
+                                        setState(() {
+                                          _isSelecting = true;
+                                          _selectionStart = details.localPosition;
+                                          _selectionEnd = details.localPosition;
+                                        });
+                                      },
+                                      onPanUpdate: (details) {
+                                        if (!_isSelecting) return;
+                                        setState(() {
+                                          _selectionEnd = details.localPosition;
+                                        });
+                                      },
+                                      onPanEnd: (details) {
+                                        if (!_isSelecting) return;
+                                        final rect = Rect.fromPoints(_selectionStart!, _selectionEnd!);
+                                        // Выделить все блоки, пересекающиеся с rect
+                                        final newSelection = <String>{};
+                                        for (final entry in _nodes.entries) {
+                                          final nodePos = entry.value.position;
+                                          final nodeRect = Rect.fromLTWH(nodePos.dx, nodePos.dy, _nodeSize.width, _nodeSize.height);
+                                          if (rect.overlaps(nodeRect)) {
+                                            newSelection.add(entry.key);
+                                          }
+                                        }
+                                        setState(() {
+                                          _selectedNodeNames = newSelection;
+                                          _selectionStart = null;
+                                          _selectionEnd = null;
+                                          _isSelecting = false;
+                                        });
+                                        _focusNode.requestFocus();
+                                      },
+                                      child: RawKeyboardListener(
+                                          focusNode: _focusNode,
+                                          autofocus: true,
+                                          onKey: _handleKeyEvent,
+                                          child: CustomPaint(
+                                            painter: ConnectionPainter(
+                                              connections: _connections,
+                                              nodes: _nodes,
+                                              nodeSize: _nodeSize,
+                                              selectedConnectionId: _selectedConnectionId,
+                                              insertionPoints: _insertionPoints,
+                                            ),
+                                            child: Stack(
+                                              children: [
+                                                  if (_showGrid) gridWidget,
+                                                  // Линии соединений
+                                                  CustomPaint(
+                                                    painter: ConnectionPainter(
+                                                      connections: _connections,
+                                                      nodes: _nodes,
+                                                      nodeSize: _nodeSize,
+                                                      selectedConnectionId: _selectedConnectionId,
+                                                      insertionPoints: _insertionPoints,
+                                                    ),
+                                                    child: Stack(
+                                                      children: _nodes.entries
+                                                      .map((entry) => _buildNodeWidget(entry.key, entry.value))
+                                                      .toList(),
+                                                    ),
+                                                  ),
+                                                  if (_isSelecting && _selectionStart != null && _selectionEnd != null)
+                                                    CustomPaint(
+                                                      painter: SelectionRectPainter(
+                                                        start: _selectionStart!,
+                                                        end: _selectionEnd!,
+                                                      ),
+                                                    ),
+                                              ],
+                                            ),
                                           ),
                                         ),
-                                    ],
+                                     ),
+                                         ),
                                   ),
                                 ),
                               ),
+                            ),
                           ),
-                        ),
-                      ),
+                        );
+                      },
                     ),
-                  ),
-                );
-              },
-            ),
-          ),
-        ],
-      ),
+                      ),
+                      ],
+              ),
+          ],
+       ),
     );
+  }
+
+  bool _isPointOverAnyNode(Offset point) {
+    for (final entry in _nodes.entries) {
+      final pos = entry.value.position;
+      final nodeRect = Rect.fromLTWH(pos.dx, pos.dy, _nodeSize.width, _nodeSize.height);
+      if (nodeRect.contains(point)) return true;
+    }
+    return false;
   }
 
   // Обработка удаления блока
   void _handleKeyEvent(RawKeyEvent event) {
+     _pushState();
+
     if (event is RawKeyDownEvent) {
+      // Ctrl+Z (отмена)
+      if (event.logicalKey == LogicalKeyboardKey.keyZ &&
+        (event.isControlPressed || event.isMetaPressed) &&
+        !event.isShiftPressed) {
+        _undo();
+      return;
+        }
+        // Ctrl+Y или Ctrl+Shift+Z (повтор)
+        if (event.logicalKey == LogicalKeyboardKey.keyZ &&
+          (event.isControlPressed || event.isMetaPressed) &&
+          event.isShiftPressed) {
+          _redo();
+        return;
+          }
+          // Ctrl+Y (альтернатива)
+          if (event.logicalKey == LogicalKeyboardKey.keyY &&
+            (event.isControlPressed || event.isMetaPressed)) {
+            _redo();
+          return;
+            }
+
+
+
       if (event.logicalKey == LogicalKeyboardKey.delete ||
         event.logicalKey == LogicalKeyboardKey.backspace) {
-        if (_selectedNodeName != null) {
-          final node = _nodes[_selectedNodeName!]?.node;
-          final isProtected = node?.data is TerminalBlock &&
-          (node!.data.text == 'Start' || node.data.text == 'End');
-          if (!isProtected) {
-            _removeNode(_selectedNodeName!);
-          } else {
-            ScaffoldMessenger.of(context).showSnackBar(
-              const SnackBar(content: Text('Нельзя удалить блок Start или End')),
-            );
+        if (_selectedNodeNames.isNotEmpty) {
+          final toDelete = List.of(_selectedNodeNames);
+          for (final nodeName in toDelete) {
+            final node = _nodes[nodeName]?.node;
+            final isProtected = node?.data is TerminalBlock &&
+            (node!.data.text == 'Start' || node.data.text == 'End');
+            if (!isProtected) {
+              _removeNode(nodeName);
+            } else {
+              ScaffoldMessenger.of(context).showSnackBar(
+                const SnackBar(content: Text('Нельзя удалить блок Start или End')),
+              );
+            }
           }
+          setState(() {
+            _selectedNodeNames.clear();
+          });
+        } else if (_selectedConnectionId != null) {
+          _connections.removeWhere((c) => c.id == _selectedConnectionId);
+          _selectedConnectionId = null;
+          setState(() {});
+          _applyAutoLayout();
+          _updateInsertionPoints();
+
         }
-        }
+      }
     }
   }
 
-  Widget _buildNodeWidget(String nodeName, _NodeWidgetData data) {
+  Widget _buildNodeWidget(String nodeName, NodeWidgetData data) {
     final node = data.node;
     final position = data.position;
-    final isSelected = _selectedNodeName == nodeName;
+    final isSelected = _selectedNodeNames.contains(nodeName);
 
     return Positioned(
       left: position.dx,
@@ -336,7 +700,7 @@ class _EditorScreenState extends State<EditorScreen> {
       child: GestureDetector(
         onTap: () {
           setState(() {
-            _selectedNodeName = nodeName;
+            _selectedNodeNames = {nodeName};
             _selectedConnectionId = null;
           });
           _focusNode.requestFocus();
@@ -397,7 +761,23 @@ class _EditorScreenState extends State<EditorScreen> {
   void _handleCanvasTapDown(TapDownDetails details) {
     final localPos = details.localPosition;
 
-    _ConnectionData? tappedConnection;
+    // Проверка точки вставки
+    for (final point in _insertionPoints) {
+      if ((localPos - point.position).distance <= 12.0) {
+        if (_selectedPrototype != null) {
+          // _insertNodeOnConnection(point.connection);
+          _insertNodeOnConnection(point.connection, insertPosition: point.position);
+        } else {
+          ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(content: Text('Выберите тип блока на панели слева')),
+          );
+        }
+        _isSelectingFromEmpty = false;
+        return;
+      }
+    }
+
+    ConnectionData? tappedConnection;
     double minDistance = 15.0;
 
     for (final conn in _connections) {
@@ -438,17 +818,23 @@ class _EditorScreenState extends State<EditorScreen> {
     if (tappedConnection != null) {
       setState(() {
         _selectedConnectionId = tappedConnection?.id;
-        _selectedNodeName = null;
+        _selectedNodeNames.clear();
       });
-
-      if (_selectedPrototype != null) {
-        _insertNodeOnConnection(tappedConnection);
-      } else {
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text('Выберите тип блока на панели слева')),
-        );
-      }
+      _isSelectingFromEmpty = false;
+      return;
     }
+
+    // Если не попали ни в блок, ни в точку, ни в линию
+    final isOverNode = _isPointOverAnyNode(localPos);
+    _isSelectingFromEmpty = !isOverNode;
+
+    if (!isOverNode) {
+      setState(() {
+        _selectedNodeNames.clear();
+        _selectedConnectionId = null;
+      });
+    }
+
   }
 
   double _distanceToLineSegment(Offset point, Offset start, Offset end) {
@@ -463,10 +849,27 @@ class _EditorScreenState extends State<EditorScreen> {
     return (point - projection).distance;
   }
 
-  Path _getConnectionPath(_ConnectionData conn) {
+  Path _getConnectionPath(ConnectionData conn) {
     final source = _nodes[conn.sourceNodeName];
     final target = _nodes[conn.targetNodeName];
     if (source == null || target == null) return Path();
+
+    // Обратная связь от заглушки к For
+    if (conn.targetPort == 'loopback') {
+      final start = source.position + Offset(_nodeSize.width / 2, _nodeSize.height); // из нижней грани заглушки
+      final end = target.position + Offset(0, _nodeSize.height / 2); // в левую грань For
+      const double up = 20.0;
+      final mid1 = Offset(start.dx, start.dy + up);
+      final mid2 = Offset(end.dx - 20, mid1.dy);
+      final mid3 = Offset(end.dx, end.dy);
+      final path = Path()
+      ..moveTo(start.dx, start.dy)
+      ..lineTo(mid1.dx, mid1.dy)
+      ..lineTo(mid2.dx, mid2.dy)
+      ..lineTo(mid3.dx, mid3.dy)
+      ..lineTo(end.dx, end.dy);
+      return path;
+    }
 
     // Вычисление нижней границы
     double maxBottomY = 0;
@@ -574,6 +977,54 @@ class _EditorScreenState extends State<EditorScreen> {
         path.moveTo(start.dx, start.dy);
         path.lineTo(end.dx, end.dy);
       }
+    } else if (conn.sourcePort == 'body') {
+      final start = source.position + Offset(_nodeSize.width / 2, _nodeSize.height);
+      final end = target.position + Offset(_nodeSize.width / 2, 0);
+      final path = Path()
+      ..moveTo(start.dx, start.dy)
+      ..lineTo(end.dx, end.dy);
+      return path;
+    } else if (conn.sourcePort == 'exit') {
+      final start = source.position + Offset(_nodeSize.width, _nodeSize.height / 2);
+      final end = target.position + Offset(_nodeSize.width / 2, 0);
+      final targetNode = target.node;
+      final isEnd = targetNode.data is TerminalBlock && targetNode.data.text == 'End';
+
+      final double maxBodyBottom = _getMaxBottomOfBodySubtree(conn.sourceNodeName);
+      double down = 30.0;
+      double turnY = start.dy;
+      if (maxBodyBottom > start.dy + _nodeSize.height) {
+        down = (maxBodyBottom - start.dy - _nodeSize.height) + 30.0;
+        turnY = start.dy + _nodeSize.height + down;
+      } else {
+        turnY = start.dy + 30.0;
+      }
+
+
+
+      if (isEnd) {
+        // Для End – уходим на общую нижнюю линию
+        final mid1 = Offset(start.dx, turnY);
+        final mid2 = Offset(end.dx, turnY);
+        final mid3 = Offset(end.dx, mid2.dy);
+        final path = Path()
+        ..moveTo(start.dx, start.dy)
+        ..lineTo(mid1.dx, mid1.dy)
+        ..lineTo(mid2.dx, mid2.dy)
+        ..lineTo(mid3.dx, mid3.dy)
+        ..lineTo(end.dx, end.dy);
+        return path;
+      } else {
+        // Обычный путь: вправо - вниз
+        final mid1 = Offset(end.dx, start.dy);
+        // final mid2 = Offset(end.dx, mid1.dy);
+        final path = Path()
+        ..moveTo(start.dx, start.dy)
+        ..lineTo(mid1.dx, mid1.dy)
+        // ..lineTo(mid2.dx, mid2.dy)
+        ..lineTo(end.dx, end.dy);
+        return path;
+      }
     } else {
       // Обычная связь
       final start = startPos + Offset(_nodeSize.width / 2, _nodeSize.height);
@@ -599,12 +1050,35 @@ class _EditorScreenState extends State<EditorScreen> {
     return path;
   }
 
-  void _insertNodeOnConnection(_ConnectionData connection) {
+  // void _insertNodeOnConnection(ConnectionData connection) {
+  void _insertNodeOnConnection(ConnectionData connection, {Offset? insertPosition}) {
+    _pushState();
+
+
     final sourceNode = _nodes[connection.sourceNodeName]?.node;
     final targetNode = _nodes[connection.targetNodeName]?.node;
     if (sourceNode == null || targetNode == null) return;
 
     final prototype = _selectedPrototype!;
+
+    Offset newPos;
+    if (connection.sourcePort == 'exit') {
+      // Размещаем новый блок справа от блока For
+      final sourceWidget = _nodes[connection.sourceNodeName]!;
+      newPos = Offset(
+        sourceWidget.position.dx + _nodeSize.width + 40,
+        sourceWidget.position.dy + _nodeSize.height / 2 - _nodeSize.height / 2,
+      );
+    } else if (insertPosition != null) {
+      newPos = insertPosition;
+    } else {
+      final sourcePos = _nodes[connection.sourceNodeName]!.position;
+      final targetPos = _nodes[connection.targetNodeName]!.position;
+      newPos = Offset(
+        (sourcePos.dx + targetPos.dx) / 2,
+        (sourcePos.dy + targetPos.dy) / 2,
+      );
+    }
 
     final sourcePos = _nodes[connection.sourceNodeName]!.position;
     final targetPos = _nodes[connection.targetNodeName]!.position;
@@ -612,7 +1086,7 @@ class _EditorScreenState extends State<EditorScreen> {
       (sourcePos.dx + targetPos.dx) / 2,
       (sourcePos.dy + targetPos.dy) / 2,
     );
-    final newPos = Offset(midpoint.dx, midpoint.dy);
+    // final newPos = Offset(midpoint.dx, midpoint.dy);
 
     final newNode = NodeFactory.createNode(
       id: _uuid.v4(),
@@ -625,7 +1099,7 @@ class _EditorScreenState extends State<EditorScreen> {
     _connections.removeWhere((c) => c.id == connection.id);
 
     // Add connections: source -> newNode, newNode -> target
-    _connections.add(_ConnectionData(
+    _connections.add(ConnectionData(
       id: _uuid.v4(),
       sourceNodeName: connection.sourceNodeName,
       sourcePort: connection.sourcePort,
@@ -635,7 +1109,7 @@ class _EditorScreenState extends State<EditorScreen> {
 
     if (prototype is LogicBlock) {
       // Ветка "Да" идёт к исходному целевому узлу
-      _connections.add(_ConnectionData(
+      _connections.add(ConnectionData(
         id: _uuid.v4(),
         sourceNodeName: newNode.name,
         sourcePort: 'yes',
@@ -643,9 +1117,12 @@ class _EditorScreenState extends State<EditorScreen> {
         targetPort: connection.targetPort,
       ));
 
-      NodeModel? endNode = _nodes.values
-      .map((d) => d.node)
-      .firstWhereOrNull((n) => n.data is TerminalBlock && n.data.text == 'End');
+      // Поиск существующего End
+      NodeWidgetData? endWidget = _nodes.values.firstWhereOrNull(
+        (w) => w.node.data is TerminalBlock && w.node.data.text == 'End'
+      );
+      NodeModel? endNode = endWidget?.node;
+
       if (endNode == null) {
         final endPos = Offset(newPos.dx + _nodeSize.width + 80, newPos.dy + _nodeSize.height + 30);
         endNode = NodeFactory.createNode(
@@ -656,17 +1133,59 @@ class _EditorScreenState extends State<EditorScreen> {
         _addNode(endNode);
       }
 
-      _connections.add(_ConnectionData(
+      _connections.add(ConnectionData(
         id: _uuid.v4(),
         sourceNodeName: newNode.name,
         sourcePort: 'no',
+        targetNodeName: endNode.name,
+        targetPort: 'in'
+        // targetNodeName: connection.targetNodeName,
+        // targetPort: connection.targetPort,
+      ));
+
+    } else if (prototype is ForBlock) {
+      // Ветка "exit" идёт к исходному целевому узлу
+      _connections.add(ConnectionData(
+        id: _uuid.v4(),
+        sourceNodeName: newNode.name,
+        sourcePort: 'exit',
         targetNodeName: connection.targetNodeName,
         targetPort: connection.targetPort,
       ));
 
+      // узел-заглушка для тела цикла
+      final bodyPos = Offset(
+        newPos.dx,
+        newPos.dy + _nodeSize.height + 30,
+      );
+      final bodyNode = NodeFactory.createNode(
+        id: _uuid.v4(),
+        data: ProcessBlock('Тело цикла'),
+        position: bodyPos,
+      );
+      _addNode(bodyNode);
+
+      // Обратная связь body - сам блок
+      _connections.add(ConnectionData(
+        id: _uuid.v4(),
+        sourceNodeName: newNode.name,
+        sourcePort: 'body',
+        targetNodeName: bodyNode.name,
+        targetPort: 'in',
+      ));
+
+      _connections.add(ConnectionData(
+        id: _uuid.v4(),
+        sourceNodeName: bodyNode.name,
+        sourcePort: 'out',
+        targetNodeName: newNode.name,
+        targetPort: 'loopback', // специальный порт для возврата
+      ));
+
+
     } else {
       // Обычный блок – одна исходящая связь
-      _connections.add(_ConnectionData(
+      _connections.add(ConnectionData(
         id: _uuid.v4(),
         sourceNodeName: newNode.name,
         sourcePort: (prototype is LogicBlock) ? 'yes' : 'out',
@@ -678,6 +1197,8 @@ class _EditorScreenState extends State<EditorScreen> {
     _selectedPrototype = null;
     _selectedConnectionId = null;
     _applyAutoLayout();
+
+    _updateInsertionPoints();
   }
 
   Widget _buildNodeShape(NodeModel node, bool isSelected) {
@@ -700,6 +1221,8 @@ class _EditorScreenState extends State<EditorScreen> {
   }
 
   void _createConnection(String srcNode, String srcPort, String tgtNode, String tgtPort) {
+    _pushState();
+
     if (_connections.any((c) =>
       c.sourceNodeName == srcNode &&
       c.sourcePort == srcPort &&
@@ -707,7 +1230,7 @@ class _EditorScreenState extends State<EditorScreen> {
       c.targetPort == tgtPort)) return;
 
     setState(() {
-      _connections.add(_ConnectionData(
+      _connections.add(ConnectionData(
         id: _uuid.v4(),
         sourceNodeName: srcNode,
         sourcePort: srcPort,
@@ -716,6 +1239,8 @@ class _EditorScreenState extends State<EditorScreen> {
       ));
     });
     _applyAutoLayout();
+
+    _updateInsertionPoints();
   }
 
   void _editNodeText(String nodeName) async {
@@ -743,6 +1268,8 @@ class _EditorScreenState extends State<EditorScreen> {
       ),
     );
     if (newText != null && newText.isNotEmpty && newText != currentText) {
+      _pushState();
+
       setState(() {
         _nodes[nodeName]!.node.data = nodeData.node.data.copyWith(text: newText);
       });
@@ -767,8 +1294,11 @@ class _EditorScreenState extends State<EditorScreen> {
     const double xOffsetStart = 0;
 
     // Построение исходящих связей для каждого узла
-    final Map<String, List<_ConnectionData>> outgoing = {};
+    final Map<String, List<ConnectionData>> outgoing = {};
     for (final conn in _connections) {
+      // if (conn.sourceNodeName == conn.targetNodeName) continue;
+      if (conn.targetPort == 'loopback') continue;
+
       outgoing.putIfAbsent(conn.sourceNodeName, () => []).add(conn);
     }
 
@@ -806,23 +1336,25 @@ class _EditorScreenState extends State<EditorScreen> {
 
       final node = _nodes[nodeName]?.node;
       final isLogic = node?.data is LogicBlock;
+      final isFor = node?.data is ForBlock;
 
-      if (isLogic && children.length >= 2) {
-        _ConnectionData? yesConn, noConn;
+      if ((isLogic || isFor) && children.length >= 2) {
+        ConnectionData? mainBranch, secondaryBranch;
         for (final c in children) {
-          if (c.sourcePort == 'yes') yesConn = c;
-          if (c.sourcePort == 'no') noConn = c;
+          if (c.sourcePort == 'yes' || c.sourcePort == 'exit') mainBranch = c;
+          if (c.sourcePort == 'no' || c.sourcePort == 'body') secondaryBranch = c;
         }
-        if (yesConn != null) {
-          _layoutX(yesConn.targetNodeName, currentX, visited);
+        if (mainBranch != null) {
+          _layoutX(mainBranch.targetNodeName, currentX, visited);
         }
-        if (noConn != null) {
-          // Сдвиг для ветки "Нет"
-          final targetNode = _nodes[noConn.targetNodeName]?.node;
+        if (secondaryBranch != null) {
+          // Сдвиг для вторичной ветки (например, "нет" или "тело")
+          final targetNode = _nodes[secondaryBranch.targetNodeName]?.node;
           final isEnd = targetNode != null && targetNode.data is TerminalBlock && targetNode.data.text == 'End';
-          const double noOffset = 300;
-          final offset = isEnd ? 0 : noOffset;
-          _layoutX(noConn.targetNodeName, currentX + offset, visited);
+          double offset = 300;
+          if (secondaryBranch.sourcePort == 'body') offset = 0;
+          _layoutX(secondaryBranch.targetNodeName, currentX + (isEnd ? 0 : offset), visited);
+
         }
       } else {
         // Обычный блок – все дети на той же X
@@ -833,8 +1365,12 @@ class _EditorScreenState extends State<EditorScreen> {
       return currentX;
     }
 
+
+
     final visited = <String>{};
     _layoutX(startName, startPos.dx + xOffsetStart, visited);
+
+
 
     // Коррекция перекрытий на каждом уровне
     final Map<int, List<String>> nodesByRank = {};
@@ -856,6 +1392,68 @@ class _EditorScreenState extends State<EditorScreen> {
       }
     }
 
+    for (final conn in _connections) {
+      if (conn.sourcePort == 'body') {
+        final forX = xPositions[conn.sourceNodeName];
+        if (forX != null && xPositions.containsKey(conn.targetNodeName)) {
+          xPositions[conn.targetNodeName] = forX;
+        }
+      }
+    }
+
+
+
+
+
+
+    // Выравнивание поддеревьев тела цикла
+    final Map<String, String> bodyRoots = {}; // узел For -> корень тела
+    for (final conn in _connections) {
+      if (conn.sourcePort == 'body') {
+        bodyRoots[conn.targetNodeName] = conn.sourceNodeName;
+      }
+    }
+    // Для каждого корня тела цикла собрать все достижимые узлы (кроме End)
+    for (final entry in bodyRoots.entries) {
+      final bodyRoot = entry.key;
+      final forNode = entry.value;
+      final forX = xPositions[forNode];
+      if (forX == null) continue;
+      final Set<String> bodySubtree = {};
+      _collectSubtreeExcludingEnd(bodyRoot, bodySubtree);
+      for (final node in bodySubtree) {
+        if (xPositions.containsKey(node)) {
+          xPositions[node] = forX;
+        }
+      }
+    }
+
+    // Смещение для поддеревьев exit (ветка "выход" цикла)
+    const double exitOffset = 200.0;
+    final Map<String, Set<String>> exitSubtrees = {};
+    for (final conn in _connections) {
+      if (conn.sourcePort == 'exit') {
+        final Set<String> subtree = {};
+        _collectSubtreeExcludingEnd(conn.targetNodeName, subtree);
+        exitSubtrees[conn.sourceNodeName] = subtree;
+      }
+    }
+    for (final entry in exitSubtrees.entries) {
+      final forNode = entry.key;
+      final subtree = entry.value;
+      final forX = xPositions[forNode];
+      if (forX == null) continue;
+      for (final node in subtree) {
+        if (xPositions.containsKey(node)) {
+          xPositions[node] = forX + exitOffset;
+        }
+      }
+      print('=== Exit subtree for ${forNode} ===');
+      for (final node in subtree) {
+        print('$node: x = ${xPositions[node]}');
+      }
+    }
+
     // Вычисление Y-координат
     final stepY = _nodeSize.height + 40.0;
     final double startY = startPos.dy;
@@ -870,16 +1468,29 @@ class _EditorScreenState extends State<EditorScreen> {
       newPositions[name] = Offset(x, y);
     }
 
+    print('=== newPositions ===');
+    for (final entry in newPositions.entries) {
+      print('${entry.key}: ${entry.value}');
+    }
+
     // Обработка конечного блока End
     final endNodeEntry = _nodes.entries.firstWhereOrNull(
       (e) => e.value.node.data is TerminalBlock && e.value.node.data.text == 'End',
     );
+
     if (endNodeEntry != null) {
       final endName = endNodeEntry.key;
-      final maxRank = ranks.values.isEmpty ? 0 : ranks.values.reduce((a, b) => a > b ? a : b);
-      final endY = startPos.dy + maxRank * stepY;
-      // final endY = startPos.dy + (maxRank + 1) * stepY;
+
+      double maxY = startPos.dy;
+      for (final entry in newPositions.entries) {
+        if (entry.key == endName) continue;
+        final y = entry.value.dy;
+        if (y > maxY) maxY = y;
+      }
+      // Ставим End ниже самого нижнего узла на расстояние шага
+      final endY = maxY + stepY;
       newPositions[endName] = Offset(startPos.dx, endY);
+
     }
 
     setState(() {
@@ -890,13 +1501,83 @@ class _EditorScreenState extends State<EditorScreen> {
       }
     });
 
+    _updateInsertionPoints();
+
     _isApplyingLayout = false;
+  }
+
+  void _updateInsertionPoints() {
+    final points = <InsertionPoint>[];
+    for (final conn in _connections) {
+      if (conn.targetPort == 'loopback') continue;
+
+      // Специальная обработка для ветки exit – ставим кружок на середине горизонтального участка
+      if (conn.sourcePort == 'exit') {
+        final source = _nodes[conn.sourceNodeName];
+        final target = _nodes[conn.targetNodeName];
+        if (source == null || target == null) continue;
+
+        final isEnd = target.node.data is TerminalBlock && target.node.data.text == 'End';
+
+        // Базовые координаты порта exit (середина правой грани For)
+        final startX = source.position.dx + _nodeSize.width;
+        final startY = source.position.dy + _nodeSize.height / 2;
+
+        if (isEnd) {
+          // Находим нижнюю границу тела цикла (через связь body)
+          final double maxBodyBottom = _getMaxBottomOfBodySubtree(conn.sourceNodeName);
+          double turnY = source.position.dy + _nodeSize.height + 30; // значение по умолчанию
+          if (maxBodyBottom > source.position.dy + _nodeSize.height) {
+            const double extraDown = 30.0;
+            final double down = (maxBodyBottom - source.position.dy - _nodeSize.height) + extraDown;
+            turnY = source.position.dy + _nodeSize.height + down;
+          }
+
+
+          final double startX = source.position.dx + _nodeSize.width;   // правая грань For
+          final double endX = target.position.dx + _nodeSize.width / 2; // центр верхней грани цели
+
+          // Середина горизонтального участка
+          final double midX = (startX + endX) / 2 + 20;
+          final Offset point = Offset(midX, turnY);
+
+          points.add(InsertionPoint(point, conn));
+        } else {
+          // Для обычного блока – плюсик на горизонтальном участке сразу после For
+          const double rightOffset = 40.0;   // длина горизонтального участка (должна совпадать с rightOffset в отрисовке)
+          const double insertOffset = rightOffset / 2; // середина этого участка
+          final pointX = startX + insertOffset;
+          final pointY = startY;
+          points.add(InsertionPoint(Offset(pointX, pointY), conn));
+        }
+        continue;
+      }
+
+      final path = _getConnectionPath(conn);
+      for (final metric in path.computeMetrics()) {
+        final length = metric.length;
+        if (length <= 0.1) continue;
+        const double t = 0.5;
+        final distance = length * t;
+        final tangent = metric.getTangentForOffset(distance);
+        if (tangent != null) {
+          points.add(InsertionPoint(tangent.position, conn));
+        }
+      }
+    }
+    setState(() {
+      _insertionPoints = points;
+    });
   }
 
   void _setNodeSize(Size newSize) {
     if (_nodeSize == newSize) return;
+
+    _pushState();
+
     _nodeSize = newSize;
     _applyAutoLayout();
+    _updateInsertionPoints();
   }
 
   Size _getContentSize() {
@@ -916,6 +1597,8 @@ class _EditorScreenState extends State<EditorScreen> {
     // Минимальные размеры, чтобы полосы прокрутки точно появились
     width = width < 1200 ? 1200 : width;
     height = height < 800 ? 800 : height;
+
+    // return Size(width * _scale, height * _scale);
     return Size(width, height);
   }
 
@@ -927,6 +1610,55 @@ class _EditorScreenState extends State<EditorScreen> {
       );
       return;
     }
+
+    // Диалог для ввода имени файла
+    final fileNameController = TextEditingController(text: 'diagram');
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Text('Экспорт в SVG'),
+        content: TextField(
+          controller: fileNameController,
+          decoration: const InputDecoration(labelText: 'Имя файла'),
+        ),
+        actions: [
+          TextButton(onPressed: () => Navigator.pop(ctx, false), child: const Text('Отмена')),
+          TextButton(onPressed: () => Navigator.pop(ctx, true), child: const Text('Сохранить')),
+        ],
+      ),
+    );
+    if (confirmed != true) return;
+
+
+    // Вычисление bounding box
+    double minX = double.infinity, minY = double.infinity;
+    double maxX = -double.infinity, maxY = -double.infinity;
+    for (final entry in _nodes.entries) {
+      final pos = entry.value.position;
+      minX = math.min(minX, pos.dx);
+      minY = math.min(minY, pos.dy);
+      maxX = math.max(maxX, pos.dx + _nodeSize.width);
+      maxY = math.max(maxY, pos.dy + _nodeSize.height);
+    }
+    for (final conn in _connections) {
+      final path = _getConnectionPath(conn);
+      for (final metric in path.computeMetrics()) {
+        for (double dist = 0; dist <= metric.length; dist += 5) {
+          final tangent = metric.getTangentForOffset(dist);
+          if (tangent != null) {
+            minX = math.min(minX, tangent.position.dx);
+            minY = math.min(minY, tangent.position.dy);
+            maxX = math.max(maxX, tangent.position.dx);
+            maxY = math.max(maxY, tangent.position.dy);
+          }
+        }
+      }
+    }
+    const padding = 40.0;
+    final width = maxX - minX + padding * 2;
+    final height = maxY - minY + padding * 2;
+    final offsetX = -minX + padding;
+    final offsetY = -minY + padding;
 
     // Генерация SVG строки
     final buffer = StringBuffer();
@@ -982,7 +1714,8 @@ class _EditorScreenState extends State<EditorScreen> {
       if (directory == null) {
         throw Exception('Не удалось получить директорию для сохранения');
       }
-      final fileName = 'diagram_${DateTime.now().millisecondsSinceEpoch}.svg';
+      final fileName = '${fileNameController.text}.svg';
+      // final fileName = 'diagram_${DateTime.now().millisecondsSinceEpoch}.svg';
       final file = File('${directory.path}/$fileName');
       await file.writeAsString(buffer.toString());
 
@@ -1052,6 +1785,15 @@ class _EditorScreenState extends State<EditorScreen> {
         '<line x1="${x+10}" y1="$y" x2="${x+10}" y2="${y+h}" stroke="black" stroke-width="2"/>'
         '<line x1="${x+w-10}" y1="$y" x2="${x+w-10}" y2="${y+h}" stroke="black" stroke-width="2"/>';
         break;
+        // Внутри switch после case SubroutineBlock():
+      case ForBlock():
+        final w = size.width;
+        final h = size.height;
+        final h2 = h / 2;
+        final w4 = w / 4;
+        final points = '${w4},0 ${w * 3 / 4},0 $w,$h2 ${w * 3 / 4},$h $w4,$h 0,$h2';
+        shapeSvg = '<polygon points="$points" stroke="black" stroke-width="2" fill="white"/>';
+        break;
       default:
         shapeSvg = '<rect x="$x" y="$y" width="$w" height="$h" stroke="black" stroke-width="2" fill="white"/>';
     }
@@ -1079,7 +1821,12 @@ class _EditorScreenState extends State<EditorScreen> {
     int firstCol = ((startPosition.dx) / stepX).floor();
     int lastCol = ((canvasSize.width - startPosition.dx) / stepX).ceil();
     for (int col = firstCol; col <= lastCol; col++) {
-      double x = (col + 1) * stepX;
+      final double stepXgrid = stepX! + 70;
+      final double startCenterX = startPosition.dx + stepX! / 2;
+      //print(startCenterX);
+      // double x = (col + 1) * stepX!;
+      double x = startCenterX + col * stepXgrid;
+      //double x = (col + 1) * stepX;
       if (x < 0 || x > canvasSize.width) continue;
       final number = col + 1;
       buffer.writeln('<text x="$x" y="20" text-anchor="middle" $textStyle>$number</text>');
@@ -1087,6 +1834,7 @@ class _EditorScreenState extends State<EditorScreen> {
 
     // Подписи строк (буквы) слева
     final double stepYgrid = stepY! + 40.0;
+    // final double stepYgrid = stepY!;
     final double startCenterY = startPosition.dy + stepY! / 2;
     int firstRow = ((0 - startCenterY) / stepY).floor();
     int lastRow = ((canvasSize.height - startCenterY) / stepY).ceil();
@@ -1104,26 +1852,8 @@ class _EditorScreenState extends State<EditorScreen> {
 
 }
 
-class _NodeWidgetData {
-  NodeModel node;
-  Offset position;
-  _NodeWidgetData({required this.node, required this.position});
-}
 
-class _ConnectionData {
-  final String? id;
-  final String sourceNodeName;
-  final String sourcePort;
-  final String targetNodeName;
-  final String targetPort;
-  _ConnectionData({
-    this.id,
-    required this.sourceNodeName,
-    required this.sourcePort,
-    required this.targetNodeName,
-    required this.targetPort,
-  });
-}
+
 
 class _ConnectionDragData {
   final String sourceNodeName;
@@ -1131,140 +1861,7 @@ class _ConnectionDragData {
   _ConnectionDragData({required this.sourceNodeName, required this.sourcePort});
 }
 
-class _ConnectionPainter extends CustomPainter {
-  final List<_ConnectionData> connections;
-  final Map<String, _NodeWidgetData> nodes;
-  final Size nodeSize;
-  final String? selectedConnectionId;
 
-  _ConnectionPainter({
-    required this.connections,
-    required this.nodes,
-    required this.nodeSize,
-    this.selectedConnectionId,
-  });
-
-  @override
-  void paint(Canvas canvas, Size size) {
-    // Поиск нижней границы всех блоков
-    double maxBottomY = 0;
-    for (final entry in nodes.entries) {
-      final bottom = entry.value.position.dy + nodeSize.height;
-      if (bottom > maxBottomY) maxBottomY = bottom;
-    }
-    maxBottomY = maxBottomY - nodeSize.height - 10;
-    const double endOffset = 0.0;
-    final double endLineY = maxBottomY + endOffset;
-
-
-    for (final conn in connections) {
-      final source = nodes[conn.sourceNodeName];
-      final target = nodes[conn.targetNodeName];
-      if (source == null || target == null) continue;
-
-      final isSelected = conn.id != null && conn.id == selectedConnectionId;
-      final paint = Paint()
-      ..color = isSelected ? Colors.blue : Colors.black
-      ..strokeWidth = isSelected ? 4 : 2
-      ..style = PaintingStyle.stroke;
-
-      if (conn.sourcePort == 'no') {
-        final start = source.position + Offset(nodeSize.width, nodeSize.height / 2);
-        final end = target.position + Offset(nodeSize.width / 2, 0);
-        final targetNode = nodes[conn.targetNodeName]?.node;
-        final isEnd = targetNode != null && targetNode.data is TerminalBlock && targetNode.data.text == 'End';
-
-        if (isEnd) {
-
-          final mid1 = Offset(start.dx + 30, start.dy);
-          final mid2 = Offset(mid1.dx, endLineY);
-          final mid3 = Offset(end.dx, mid2.dy);
-          final path = Path()
-          ..moveTo(start.dx, start.dy)
-          ..lineTo(mid1.dx, mid1.dy)
-          ..lineTo(mid2.dx, mid2.dy)
-          ..lineTo(mid3.dx, mid3.dy)
-          ..lineTo(end.dx, end.dy);
-          canvas.drawPath(path, paint);
-        } else {
-          // вправо → вниз → влево
-          final mid1 = Offset(end.dx, start.dy);
-          final mid2 = Offset(mid1.dx, end.dy);
-          final path = Path()
-          ..moveTo(start.dx, start.dy)
-          ..lineTo(mid1.dx, mid1.dy)
-          ..lineTo(mid2.dx, mid2.dy)
-          ..lineTo(end.dx, end.dy);
-          canvas.drawPath(path, paint);
-          print("no noend");
-        }
-      } else if (conn.sourcePort == 'yes') {
-        final start = source.position + Offset(nodeSize.width / 2, nodeSize.height);
-        final end = target.position + Offset(nodeSize.width / 2, 0);
-        final targetNode = nodes[conn.targetNodeName]?.node;
-        final isEnd = targetNode != null && targetNode.data is TerminalBlock && targetNode.data.text == 'End';
-        print(end.dx);
-        print(start.dx);
-        if (isEnd && end.dx != start.dx) {
-          const double verticalStep = 20.0;
-          // final mid1 = Offset(start.dx, start.dy + verticalStep);
-          final mid1 = Offset(start.dx, endLineY);
-          // final mid2 = Offset(end.dx, endLineY);
-          final mid2 = Offset(end.dx, endLineY);
-          // final mid2 = Offset(end.dx, mid1.dy);
-
-          final path = Path()
-          ..moveTo(start.dx, start.dy)
-          ..lineTo(mid1.dx, mid1.dy)
-          ..lineTo(mid2.dx, mid2.dy)
-          ..lineTo(end.dx, end.dy);
-          canvas.drawPath(path, paint);
-          print("yes");
-        } else if (isEnd) {
-          canvas.drawLine(start, end, paint);
-        } else {
-          // вправо -> вниз -> влево
-          final sourcePos = source.position + Offset(nodeSize.width / 2, nodeSize.height);
-          final targetPos = target.position + Offset(nodeSize.width / 2, 0);
-          canvas.drawLine(sourcePos, targetPos, paint);
-        }
-      } else {
-        final start = source.position + Offset(nodeSize.width / 2, nodeSize.height);
-        final end = target.position + Offset(nodeSize.width / 2, 0);
-        final targetNode = nodes[conn.targetNodeName]?.node;
-        final isEnd = targetNode != null && targetNode.data is TerminalBlock && targetNode.data.text == 'End';
-
-        if (isEnd && end.dx != start.dx) {
-          // Путь для End: вниз -> влево -> вниз
-          final mid1 = Offset(start.dx, start.dy + 20);
-          final mid2 = Offset(mid1.dx, endLineY);
-          final mid3 = Offset(end.dx, mid2.dy);
-          // final mid2 = Offset(end.dx, mid1.dy);
-          final path = Path()
-          ..moveTo(start.dx, start.dy)
-          ..lineTo(mid1.dx, mid1.dy)
-          ..lineTo(mid2.dx, mid2.dy)
-          ..lineTo(mid3.dx, mid3.dy)
-          ..lineTo(end.dx, end.dy);
-          canvas.drawPath(path, paint);
-        } else {
-          final sourcePos = source.position + Offset(nodeSize.width / 2, nodeSize.height);
-          final targetPos = target.position + Offset(nodeSize.width / 2, 0);
-          canvas.drawLine(sourcePos, targetPos, paint);
-        }
-      }
-    }
-  }
-
-
-  @override
-  bool shouldRepaint(covariant _ConnectionPainter oldDelegate) {
-    return oldDelegate.connections != connections ||
-    oldDelegate.nodes != nodes ||
-    oldDelegate.nodeSize != nodeSize ||
-    oldDelegate.selectedConnectionId != selectedConnectionId;
-  }
-}
 
 // Виджет, рисующий буквы строк (слева) и цифры столбцов (сверху)
 class GridWithLabels extends StatelessWidget {
@@ -1286,7 +1883,7 @@ class GridWithLabels extends StatelessWidget {
     if (startPosition == null) return const SizedBox.shrink();
     return CustomPaint(
       size: canvasSize,
-      painter: _GridLabelsPainter(
+      painter: GridLabelsPainter(
         stepX: stepX,
         stepY: stepY,
         startPosition: startPosition!,
@@ -1295,67 +1892,8 @@ class GridWithLabels extends StatelessWidget {
   }
 }
 
-class _GridLabelsPainter extends CustomPainter {
-  final double? stepX;
-  final double? stepY;
-  final Offset startPosition;
-
-  _GridLabelsPainter({
-    required this.stepX,
-    required this.stepY,
-    required this.startPosition,
-  });
-
-  @override
-  void paint(Canvas canvas, Size size) {
-    if (stepX == null || stepY == null) return;
-
-    final textStyle = TextStyle(
-      color: Colors.grey.shade700,
-      fontSize: 18,
-      fontWeight: FontWeight.w500,
-    );
-
-    // Подписи столбцов (цифры) сверху
-    int firstCol = ((startPosition.dx) / stepX!).floor();
-    int lastCol = ((size.width - startPosition.dx) / stepX!).ceil();
-    for (int col = firstCol; col <= lastCol; col++) {
-
-      double x = (col + 1) * stepX!;
-
-      if (x < 0 || x > size.width) continue;
-      final number = col + 1;
-      final textSpan = TextSpan(text: '$number', style: textStyle);
-      final textPainter = TextPainter(text: textSpan, textDirection: TextDirection.ltr);
-      textPainter.layout();
-      textPainter.paint(canvas, Offset(x, 2));
-    }
-
-    // Подписи строк (буквы) слева
-    final double stepYgrid = stepY! + 40.0;
-    final double startCenterY = startPosition.dy + stepY! / 2;
-    int firstRow = ((0 - startCenterY) / stepY!).floor();
-    int lastRow = ((size.height - startCenterY) / stepY!).ceil();
-    for (int row = firstRow; row <= lastRow; row++) {
-      // double y = startPosition.dy + row * stepY! + stepY! / 2;
-      // double y = (row * 1.5) * stepY!;
-      double y = startCenterY + row * stepYgrid;
-      print(y);
-      if (y < 0 || y > size.height) continue;
-      String letter = numberToLetter(row);
-      final textSpan = TextSpan(text: letter, style: textStyle);
-      final textPainter = TextPainter(text: textSpan, textDirection: TextDirection.ltr);
-      textPainter.layout();
-      // textPainter.paint(canvas, Offset(2, y));
-      textPainter.paint(canvas, Offset(2, y - textPainter.height / 2));
-
-    }
-  }
 
 
 
-  @override
-  bool shouldRepaint(covariant _GridLabelsPainter oldDelegate) {
-    return oldDelegate.stepX != stepX || oldDelegate.stepY != stepY || oldDelegate.startPosition != startPosition;
-  }
-}
+
+

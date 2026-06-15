@@ -58,6 +58,12 @@ class GostNodeBuilder {
           size: nodeSize,
         );
         break;
+      case ForBlock():
+        shape = _HexagonNode(
+          child: _NodeContent(text: text),
+          size: nodeSize,
+        );
+        break;
       default:
         shape = _RectNode(
           child: _NodeContent(text: text),
@@ -317,6 +323,7 @@ class _RectNode extends StatelessWidget {
   Widget build(BuildContext context) => Container(
     width: size.width,
     height: size.height,
+    alignment: Alignment.center,
     decoration: BoxDecoration(
       color: Colors.transparent,
       border: Border.all(color: Colors.black, width: 2),
@@ -334,6 +341,7 @@ class _RoundedRectNode extends StatelessWidget {
   Widget build(BuildContext context) => Container(
     width: size.width,
     height: size.height,
+    alignment: Alignment.center,
     decoration: BoxDecoration(
       color: Colors.transparent,
       border: Border.all(color: Colors.black, width: 2),
@@ -357,9 +365,9 @@ class _DiamondNode extends StatelessWidget {
           height: size.height,
           child: CustomPaint(
             painter: _DiamondPainter(size: size),
-            child: Center(child: child),
           ),
         ),
+        Center(child: child),
         Positioned(
           bottom: -20,
           left: size.width / 2 - 25,
@@ -399,13 +407,15 @@ class _ParallelogramNode extends StatelessWidget {
   const _ParallelogramNode({required this.child, required this.size});
   @override
   Widget build(BuildContext context) {
-    return SizedBox(
-      width: size.width,
-      height: size.height,
-      child: CustomPaint(
-        painter: _ParallelogramPainter(size: size),
-        child: child,
-      ),
+    return Stack(
+      children: [
+        SizedBox(
+          width: size.width,
+          height: size.height,
+          child: CustomPaint(painter: _ParallelogramPainter(size: size)),
+        ),
+        Center(child: child),
+      ],
     );
   }
 }
@@ -435,13 +445,15 @@ class _SubroutineNode extends StatelessWidget {
   const _SubroutineNode({required this.child, required this.size});
   @override
   Widget build(BuildContext context) {
-    return SizedBox(
-      width: size.width,
-      height: size.height,
-      child: CustomPaint(
-        painter: _SubroutineNodePainter(size: size),
-        child: child,
-      ),
+    return Stack(
+      children: [
+        SizedBox(
+          width: size.width,
+          height: size.height,
+          child: CustomPaint(painter: _SubroutineNodePainter(size: size)),
+        ),
+        Center(child: child),
+      ],
     );
   }
 }
@@ -459,6 +471,74 @@ class _SubroutineNodePainter extends CustomPainter {
     final double right = size.width - 10.0;
     canvas.drawLine(Offset(right, 0), Offset(right, size.height), borderPaint);
   }
+  @override
+  bool shouldRepaint(covariant CustomPainter oldDelegate) => false;
+}
+
+class _HexagonNode extends StatelessWidget {
+  final Widget child;
+  final Size size;
+  const _HexagonNode({required this.child, required this.size});
+
+  @override
+  Widget build(BuildContext context) {
+    return SizedBox(
+      width: size.width,
+      height: size.height,
+      child: Stack(
+        clipBehavior: Clip.none,
+        children: [
+          SizedBox(
+            width: size.width,
+            height: size.height,
+            child: CustomPaint(painter: _HexagonPainter(size: size)),
+          ),
+          Center(child: child),
+          // Positioned(
+          //   right: -25,
+          //   top: size.height / 2 - 20,
+          //   child: const Text('exit', style: TextStyle(fontSize: 12, fontWeight: FontWeight.bold)),
+          // ),
+          // Positioned(
+          //   bottom: -25,
+          //   left: size.width / 2 - 25,
+          //   child: const Text('body', style: TextStyle(fontSize: 12, fontWeight: FontWeight.bold)),
+          // ),
+        ],
+      ),
+    );
+  }
+}
+
+class _HexagonPainter extends CustomPainter {
+  final Size size;
+  _HexagonPainter({required this.size});
+
+  @override
+  void paint(Canvas canvas, Size _) {
+    final path = Path();
+    final w = size.width;
+    final h = size.height;
+    final h2 = h / 2;
+    final w4 = w / 4;
+    path.moveTo(w4, 0);
+    path.lineTo(w * 3 / 4, 0);
+    path.lineTo(w, h2);
+    path.lineTo(w * 3 / 4, h);
+    path.lineTo(w4, h);
+    path.lineTo(0, h2);
+    path.close();
+    final paint = Paint()
+    ..color = Colors.transparent
+    ..style = PaintingStyle.fill;
+    canvas.drawPath(path, paint);
+    final borderPaint = Paint()
+    ..color = Colors.black
+    ..style = PaintingStyle.stroke
+    ..strokeWidth = 2;
+    canvas.drawPath(path, borderPaint);
+  }
+
   @override
   bool shouldRepaint(covariant CustomPainter oldDelegate) => false;
 }

@@ -36,3 +36,9 @@ class SubroutineBlock extends GostNodeData {
   @override
   SubroutineBlock copyWith({String? text}) => SubroutineBlock(text ?? this.text);
 }
+
+class ForBlock extends GostNodeData {
+  const ForBlock(super.text);
+  @override
+  ForBlock copyWith({String? text}) => ForBlock(text ?? this.text);
+}
