@@ -1,0 +1,5 @@
+name: my_app
+environment:
+  sdk: '>=3.0.0 <4.0.0'
+dependencies:
+  d4rt: ^0.2.2
