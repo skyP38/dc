@@ -1,20 +1,14 @@
 package main
 
 import (
-	"archive/tar"
-	"compress/gzip"
 	"crypto/md5"
-	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
 	"io"
 	"log"
-	"net/http"
 	"os"
 	"path/filepath"
 	"strings"
-
-	"github.com/go-git/go-git/v5"
 
 	"t/lua"
 )
@@ -24,6 +18,118 @@ const (
 	downloadsDir = "./downloads"
 	srcDir       = "./src"
 )
+
+// TODO
+type Task struct {
+	urlStr       string
+	hashStr      string
+	downloadPath string
+	status       bool
+}
+
+type Runnable interface {
+	Run(ch chan Task)
+	run()
+}
+
+type runnable struct {
+	callBackFunc func()
+}
+
+type Downloader struct {
+	runnable
+}
+
+type Unpacker struct {
+	runnable
+}
+
+func (r runnable) Run(ch chan Task) {
+	r.run()
+}
+
+func (r runnable) run() {
+	r.callBackFunc()
+}
+
+func (d Downloader) Run(ch chan Task) {
+	//TODO
+	//
+	task := <-ch
+	urlStr := task.urlStr
+	hashStr := task.hashStr
+	downloadPath := task.downloadPath
+
+	// скачивание источников
+	if err := os.MkdirAll(downloadsDir, 0755); err != nil {
+		log.Fatalf("Failed to create downloads dir: %v", err)
+	}
+
+	log.Printf(downloadPath)
+
+	if _, err := os.Stat(downloadPath); err != nil {
+
+		log.Printf("Downloading %s ...", urlStr)
+
+		err = downloadFile(urlStr, hashStr, downloadPath)
+		if err != nil {
+			log.Fatalf("%v", err)
+		}
+
+		log.Println("Done.")
+	}
+	task.status = true
+	ch <- task
+
+}
+
+func NewDownloader() Runnable {
+	var d Downloader
+	// d.callBackFunc = d.Run()
+	return d
+}
+
+func (u Unpacker) Run(ch chan Task) {
+	//TODO
+	//
+	//
+
+	task := <-ch
+	fileName := task.urlStr
+	versStr := task.hashStr
+	downloadPath := task.downloadPath
+
+	// распаковка в каталог src
+	if err := os.MkdirAll(srcDir, 0755); err != nil {
+		log.Fatalf("Failed to create src dir: %v", err)
+	}
+
+	md5String, err := getFileMD5(downloadPath)
+	if err != nil {
+		log.Fatalf("Error: %v\n", err)
+		return
+	}
+	fileName = strings.Join([]string{md5String, fileName, versStr}, "-")
+	srcPath := filepath.Join(srcDir, fileName)
+	log.Printf(srcPath)
+
+	err = ExtractFileTarGz(downloadPath, srcPath)
+	if err != nil {
+		log.Printf("Extraction failed: %v\n", err)
+		return
+	}
+	log.Printf("extraction file done")
+
+	task.status = true
+	ch <- task
+
+}
+
+func NewUnpacker() Unpacker {
+	var u Unpacker
+	// u.callBackFunc = u.Run()
+	return u
+}
 
 func main() {
 	if len(os.Args) < 2 {
@@ -101,44 +207,14 @@ func main() {
 		log.Fatalf("Failed to iterate dependencies: %v", err)
 	}
 
-	log.Printf("Package: %s", pkgName)
-	log.Printf("Source URL: %s", urlStr)
-	log.Printf("Expected hash: %s", hashStr)
-	if len(deps) > 0 {
-		log.Printf("Dependencies: %v", deps)
-	} else {
-		log.Println("No dependencies")
-	}
-
-	// скачивание источников
-	if err := os.MkdirAll(downloadsDir, 0755); err != nil {
-		log.Fatalf("Failed to create downloads dir: %v", err)
-	}
-
-	fileName := filepath.Base(urlStr)
-	if fileName == "" || fileName == "." || fileName == "/" {
-		fileName = pkgName + ".tar.gz"
-	}
-	downloadPath := filepath.Join(downloadsDir, fileName)
-
-	log.Printf(downloadPath)
-
-	if _, err := os.Stat(downloadPath); err != nil {
-
-		log.Printf("Downloading %s ...", urlStr)
-
-		err = downloadFile(urlStr, hashStr, downloadPath)
-		if err != nil {
-			log.Fatalf("%v", err)
-		}
-
-		log.Println("Done.")
-	}
-
-	// распаковка в каталог src
-	if err := os.MkdirAll(srcDir, 0755); err != nil {
-		log.Fatalf("Failed to create src dir: %v", err)
-	}
+	// log.Printf("Package: %s", pkgName)
+	// log.Printf("Source URL: %s", urlStr)
+	// log.Printf("Expected hash: %s", hashStr)
+	// if len(deps) > 0 {
+	// log.Printf("Dependencies: %v", deps)
+	// } else {
+	// log.Println("No dependencies")
+	// }
 
 	if err := L.DoString(`pkg_version = recipe.version`); err != nil {
 		log.Fatalf("Failed to get recipe.version: %v", err)
@@ -152,36 +228,28 @@ func main() {
 		log.Fatalf("version is not a valid string")
 	}
 
-	md5String, err := getFileMD5(downloadPath)
-	if err != nil {
-		log.Fatalf("Error: %v\n", err)
-		return
+	fileName := filepath.Base(urlStr)
+	if fileName == "" || fileName == "." || fileName == "/" {
+		fileName = pkgName + ".tar.gz"
 	}
-	fileName = strings.Join([]string{md5String, fileName, versStr}, "-")
-	srcPath := filepath.Join(srcDir, fileName)
-	log.Printf(srcPath)
+	downloadPath := filepath.Join(downloadsDir, fileName)
 
-	err = ExtractFileTarGz(downloadPath, srcPath)
-	if err != nil {
-		fmt.Printf("Extraction failed: %v\n", err)
-		return
-	}
-	log.Printf("extraction file done")
-}
+	d := NewDownloader()
+	u := NewUnpacker()
 
-func copyFile(src, dst string) error {
-	in, err := os.Open(src)
-	if err != nil {
-		return err
-	}
-	defer in.Close()
-	out, err := os.Create(dst)
-	if err != nil {
-		return err
-	}
-	defer out.Close()
-	_, err = io.Copy(out, in)
-	return err
+	chd := make(chan Task)
+	chu := make(chan Task)
+
+	go d.Run(chd)
+	go u.Run(chu)
+
+	chd <- Task{urlStr, hashStr, downloadPath, false}
+
+	chu <- Task{fileName, versStr, downloadPath, false}
+
+	<-chd
+	<-chu
+
 }
 
 func getFileMD5(filePath string) (string, error) {
@@ -199,147 +267,4 @@ func getFileMD5(filePath string) (string, error) {
 
 	hashInBytes := hash.Sum(nil)
 	return hex.EncodeToString(hashInBytes), nil
-}
-
-func ExtractFileTarGz(srcFile, destDir string) error {
-	f, err := os.Open(srcFile)
-	if err != nil {
-		return fmt.Errorf("failed to open source file: %w", err)
-	}
-	defer f.Close()
-
-	gzReader, err := gzip.NewReader(f)
-	if err != nil {
-		return fmt.Errorf("failed to create gzip reader: %w", err)
-	}
-	defer gzReader.Close()
-
-	tarReader := tar.NewReader(gzReader)
-
-	oldHeader, err := tarReader.Next()
-	lenOldHeader := len(oldHeader.Name)
-
-	for {
-		header, err := tarReader.Next()
-		if err == io.EOF {
-			break // End of archive
-		}
-		if err != nil {
-			return fmt.Errorf("failed to read tar header: %w", err)
-		}
-
-		targetPath := filepath.Join(destDir, header.Name[lenOldHeader:])
-
-		if !strings.HasPrefix(targetPath, filepath.Clean(destDir)+string(os.PathSeparator)) {
-			return fmt.Errorf("illegal file path path in tar: %s", header.Name)
-		}
-
-		switch header.Typeflag {
-		case tar.TypeDir:
-			if err := os.MkdirAll(targetPath, 0755); err != nil {
-				return fmt.Errorf("failed to create directory: %w", err)
-			}
-
-		case tar.TypeReg:
-			if err := os.MkdirAll(filepath.Dir(targetPath), 0755); err != nil {
-				return fmt.Errorf("failed to create parent directory: %w", err)
-			}
-
-			outFile, err := os.OpenFile(targetPath, os.O_CREATE|os.O_RDWR|os.O_TRUNC, header.FileInfo().Mode())
-			if err != nil {
-				return fmt.Errorf("failed to create file: %w", err)
-			}
-
-			if _, err := io.Copy(outFile, tarReader); err != nil {
-				outFile.Close()
-				return fmt.Errorf("failed to copy file contents: %w", err)
-			}
-			outFile.Close()
-		}
-	}
-
-	return nil
-}
-
-func downloadFile(url, hash, downloadPath string) error {
-	if url[:5] == "https" {
-		return downloadFileHTTPS(url, hash, downloadPath)
-	} else {
-		return downloadFileGit(url)
-	}
-
-}
-
-func downloadFileHTTPS(url, hash, downloadPath string) error {
-
-	tmpFile, err := os.CreateTemp("", "download-*")
-	if err != nil {
-		log.Fatalf("Failed to create temp file: %v", err)
-	}
-	defer os.Remove(tmpFile.Name())
-
-	resp, err := http.Get(url)
-	if err != nil {
-		return fmt.Errorf("Failed to download: %v", err)
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode != http.StatusOK {
-		return fmt.Errorf("HTTP error: %s", resp.Status)
-	}
-
-	// проверка целостности
-	hasher := sha256.New()
-	multiWriter := io.MultiWriter(tmpFile, hasher)
-
-	if _, err := io.Copy(multiWriter, resp.Body); err != nil {
-		return fmt.Errorf("Failed to write to temp file: %v", err)
-	}
-
-	calculatedHash := hex.EncodeToString(hasher.Sum(nil))
-	expectedHash := strings.TrimPrefix(hash, "sha256:")
-	expectedHash = strings.TrimPrefix(expectedHash, "SHA256:")
-	expectedHash = strings.TrimSpace(expectedHash)
-
-	if calculatedHash != expectedHash {
-		return fmt.Errorf("Hash mismatch: expected %s, got %s", expectedHash, calculatedHash)
-	}
-	log.Println("Hash verified successfully")
-
-	if err := os.Rename(tmpFile.Name(), downloadPath); err != nil {
-		if err := copyFile(tmpFile.Name(), downloadPath); err != nil {
-			log.Fatalf("Failed to move file: %v", err)
-		}
-	}
-	log.Printf("Downloaded and saved to %s", downloadPath)
-
-	return nil
-}
-
-func downloadFileGit(url string) error {
-	parts := strings.Split(url, "/")
-	repoName := strings.TrimSuffix(parts[len(parts)-1], ".git")
-	destDir := filepath.Join(".", repoName)
-
-	// sshAuth, err := ssh.NewPublicKeysFromFile("git", os.ExpandEnv("$HOME/.ssh/id_rsa"), "")
-	// if err != nil {
-	// 	fmt.Printf("Ошибка загрузки SSH ключа: %v\n", err)
-	// 	os.Exit(1)
-	// }
-
-	// Опции для клонирования
-	cloneOptions := &git.CloneOptions{
-		URL: url,
-		// Auth:              sshAuth,
-		Progress:          os.Stdout,
-		Depth:             1, // Только последний коммит
-		RecurseSubmodules: git.DefaultSubmoduleRecursionDepth,
-	}
-
-	_, err := git.PlainClone(destDir, false, cloneOptions)
-	if err != nil {
-		return fmt.Errorf("Error cloning repository: %v\n", err)
-	}
-
-	return nil
 }
