@@ -1,14 +1,4 @@
-
-
-
-
-
-
-
-
-
-
-
+local PR = require("package")
 
 return {
    name = "hello",

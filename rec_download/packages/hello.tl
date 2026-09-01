@@ -1,14 +1,4 @@
-local record Source
-    url: string
-    hash: string
-end
-
-local record PackageRecipe
-    name: string
-    version: string
-    source: Source
-    dependencies: {string}
-end
+local PR = require("package")
 
 return {
     name = "hello",
