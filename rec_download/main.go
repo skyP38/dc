@@ -28,34 +28,45 @@ type Task struct {
 }
 
 type Runnable interface {
-	Run(ch chan Task)
+	Run()
 	run()
 }
 
 type runnable struct {
-	callBackFunc func()
+	// callBackFunc func()
+	ch chan Task
 }
 
 type Downloader struct {
 	runnable
+	// ch chan Task
 }
 
 type Unpacker struct {
 	runnable
+	// ch chan Task
 }
 
-func (r runnable) Run(ch chan Task) {
+func (r runnable) Run() {
 	r.run()
 }
 
 func (r runnable) run() {
-	r.callBackFunc()
+	// r.callBackFunc()
 }
 
-func (d Downloader) Run(ch chan Task) {
+func (r Downloader) Run() {
+	r.run()
+}
+
+func (r Unpacker) Run() {
+	r.run()
+}
+
+func (d Downloader) run() {
 	//TODO
 	//
-	task := <-ch
+	task := <-d.ch
 	urlStr := task.urlStr
 	hashStr := task.hashStr
 	downloadPath := task.downloadPath
@@ -79,22 +90,24 @@ func (d Downloader) Run(ch chan Task) {
 		log.Println("Done.")
 	}
 	task.status = true
-	ch <- task
+	// log.Printf("down")
+	d.ch <- task
 
 }
 
-func NewDownloader() Runnable {
+func NewDownloader() Downloader {
 	var d Downloader
+	d.ch = make(chan Task)
 	// d.callBackFunc = d.Run()
 	return d
 }
 
-func (u Unpacker) Run(ch chan Task) {
+func (u Unpacker) run() {
 	//TODO
 	//
 	//
 
-	task := <-ch
+	task := <-u.ch
 	fileName := task.urlStr
 	versStr := task.hashStr
 	downloadPath := task.downloadPath
@@ -121,12 +134,13 @@ func (u Unpacker) Run(ch chan Task) {
 	log.Printf("extraction file done")
 
 	task.status = true
-	ch <- task
+	u.ch <- task
 
 }
 
 func NewUnpacker() Unpacker {
 	var u Unpacker
+	u.ch = make(chan Task)
 	// u.callBackFunc = u.Run()
 	return u
 }
@@ -237,18 +251,18 @@ func main() {
 	d := NewDownloader()
 	u := NewUnpacker()
 
-	chd := make(chan Task)
-	chu := make(chan Task)
+	// chd := make(chan Task)
+	// chu := make(chan Task)
 
-	go d.Run(chd)
-	go u.Run(chu)
+	go d.Run()
+	go u.Run()
 
-	chd <- Task{urlStr, hashStr, downloadPath, false}
+	d.ch <- Task{urlStr, hashStr, downloadPath, false}
 
-	chu <- Task{fileName, versStr, downloadPath, false}
+	u.ch <- Task{fileName, versStr, downloadPath, false}
 
-	<-chd
-	<-chu
+	<-d.ch
+	<-u.ch
 
 }
 
